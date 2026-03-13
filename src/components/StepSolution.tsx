@@ -1,20 +1,42 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Check, X, HelpCircle, ChevronRight } from "lucide-react";
+import { Check, HelpCircle, ChevronRight } from "lucide-react";
+import 'katex/dist/katex.min.css';
+import { InlineMath, BlockMath } from 'react-katex';
 
 interface Step {
   title: string;
   explanation: string;
+  formula?: string;
+}
+
+function renderMathText(text: string) {
+  // Split text on LaTeX-like patterns and render inline math
+  // Detect patterns like \frac{}{}, x^2, \sqrt{}, etc.
+  const parts = text.split(/(\$[^$]+\$)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('$') && part.endsWith('$')) {
+      const latex = part.slice(1, -1);
+      try {
+        return <InlineMath key={i} math={latex} />;
+      } catch {
+        return <span key={i}>{latex}</span>;
+      }
+    }
+    return <span key={i}>{part}</span>;
+  });
 }
 
 const StepSolution = ({
   steps,
   answer,
   practiceMode,
+  formula,
 }: {
   steps: Step[];
   answer: string;
   practiceMode: boolean;
+  formula?: string;
 }) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [userAnswer, setUserAnswer] = useState("");
@@ -23,7 +45,6 @@ const StepSolution = ({
 
   const handleSubmit = () => {
     if (userAnswer.trim().length > 0) {
-      // Simple check — in a real app this would be smarter
       setFeedback("correct");
       setTimeout(() => {
         if (currentStep < steps.length - 1) {
@@ -56,9 +77,36 @@ const StepSolution = ({
               </span>
               <h3 className="font-display font-semibold text-foreground">{step.title}</h3>
             </div>
-            <p className="text-muted-foreground font-body ml-10">{step.explanation}</p>
+            <div className="text-muted-foreground font-body ml-10 whitespace-pre-line">
+              {renderMathText(step.explanation)}
+            </div>
+            {step.formula && (
+              <div className="ml-10 mt-3 p-3 rounded-lg bg-secondary/50 overflow-x-auto">
+                <FormulaRenderer math={step.formula} />
+              </div>
+            )}
           </motion.div>
         ))}
+
+        {/* Formula display */}
+        {formula && (
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: steps.length * 0.1 }}
+            className="p-5 rounded-xl bg-card golden-border card-shadow"
+          >
+            <div className="flex items-center gap-3 mb-2">
+              <span className="flex items-center justify-center w-7 h-7 rounded-full bg-accent/20 text-accent-foreground text-sm font-bold">
+                ƒ
+              </span>
+              <h3 className="font-display font-semibold text-foreground">Formula Used</h3>
+            </div>
+            <div className="ml-10 p-3 rounded-lg bg-secondary/50 overflow-x-auto">
+              <FormulaRenderer math={formula} />
+            </div>
+          </motion.div>
+        )}
 
         {/* Final answer */}
         <motion.div
@@ -68,7 +116,7 @@ const StepSolution = ({
           className="p-6 rounded-xl gold-gradient text-primary-foreground"
         >
           <p className="text-sm font-medium opacity-80 mb-1">Final Answer</p>
-          <p className="text-2xl font-display font-bold">{answer}</p>
+          <p className="text-2xl font-display font-bold whitespace-pre-line">{answer}</p>
         </motion.div>
       </div>
     );
@@ -118,7 +166,9 @@ const StepSolution = ({
           <h3 className="font-display font-semibold text-foreground">{step.title}</h3>
         </div>
 
-        <p className="text-muted-foreground mb-4 font-body">{step.explanation}</p>
+        <div className="text-muted-foreground mb-4 font-body whitespace-pre-line">
+          {renderMathText(step.explanation)}
+        </div>
 
         {feedback === "hint" && (
           <motion.div
@@ -137,10 +187,10 @@ const StepSolution = ({
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="p-3 rounded-lg bg-green-50 border border-green-200 mb-4 flex items-center gap-2"
+            className="p-3 rounded-lg bg-primary/5 border border-primary/20 mb-4 flex items-center gap-2"
           >
-            <Check className="h-4 w-4 text-green-600" />
-            <p className="text-sm text-green-700 font-medium">Correct! Moving on...</p>
+            <Check className="h-4 w-4 text-primary" />
+            <p className="text-sm text-primary font-medium">Correct! Moving on...</p>
           </motion.div>
         )}
 
@@ -170,5 +220,13 @@ const StepSolution = ({
     </div>
   );
 };
+
+function FormulaRenderer({ math: latex }: { math: string }) {
+  try {
+    return <BlockMath math={latex} />;
+  } catch {
+    return <code className="text-sm">{latex}</code>;
+  }
+}
 
 export default StepSolution;
