@@ -187,7 +187,7 @@ const StepSolution = ({
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="p-3 rounded-lg bg-green-50 border border-green-200 mb-4 flex items-center gap-2"
+            className="p-3 rounded-lg bg-primary/5 border border-primary/20 mb-4 flex items-center gap-2"
           >
             <Check className="h-4 w-4 text-primary" />
             <p className="text-sm text-primary font-medium">Correct! Moving on...</p>
