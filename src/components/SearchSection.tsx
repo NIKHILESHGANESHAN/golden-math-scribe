@@ -1,9 +1,10 @@
 import { useState, useRef } from "react";
-import { Search, Keyboard, Lightbulb, ChevronRight } from "lucide-react";
+import { Search, Keyboard, Lightbulb, ChevronRight, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MathKeyboard from "./MathKeyboard";
 import StepSolution from "./StepSolution";
 import { addToHistory } from "@/lib/history";
+import { supabase } from "@/integrations/supabase/client";
 
 const placeholders = [
   "solve quadratic equation x² − 5x + 6 = 0",
@@ -13,64 +14,95 @@ const placeholders = [
   "limit of (1 + 1/n)^n as n → ∞",
 ];
 
-// Mock step-by-step solutions
-const mockSolve = (query: string): { steps: { title: string; explanation: string }[]; answer: string } => {
-  const q = query.toLowerCase();
-  if (q.includes("x²") && q.includes("5x") && q.includes("6")) {
-    return {
-      steps: [
-        { title: "Identify the equation", explanation: "We have x² − 5x + 6 = 0, a quadratic equation in standard form ax² + bx + c = 0." },
-        { title: "Find factors", explanation: "We need two numbers that multiply to 6 and add to −5. Those numbers are −2 and −3." },
-        { title: "Factor the expression", explanation: "(x − 2)(x − 3) = 0" },
-        { title: "Apply zero product property", explanation: "Set each factor equal to zero: x − 2 = 0 or x − 3 = 0" },
-      ],
-      answer: "x = 2 or x = 3",
-    };
+interface SolutionData {
+  steps: { title: string; explanation: string }[];
+  answer: string;
+  images?: string[];
+}
+
+const parseWolframPods = (pods: any[]): SolutionData => {
+  const steps: { title: string; explanation: string }[] = [];
+  let answer = "";
+  const images: string[] = [];
+
+  for (const pod of pods) {
+    const texts = pod.subpods
+      ?.map((sp: any) => sp.plaintext)
+      .filter((t: string) => t && t.trim())
+      .join("\n");
+
+    const podImages = pod.subpods
+      ?.map((sp: any) => sp.img)
+      .filter((img: string | null) => img);
+
+    if (podImages?.length) {
+      images.push(...podImages);
+    }
+
+    const title = pod.title || "Result";
+    const lowerTitle = title.toLowerCase();
+
+    if (lowerTitle.includes("result") || lowerTitle.includes("solution") || lowerTitle.includes("roots")) {
+      answer = texts || answer;
+      steps.push({ title, explanation: texts || "(see image)" });
+    } else if (texts) {
+      steps.push({ title, explanation: texts });
+    }
   }
-  if (q.includes("derivative") || q.includes("diff")) {
-    return {
-      steps: [
-        { title: "Identify the function", explanation: "f(x) = x² + 3x" },
-        { title: "Apply power rule", explanation: "d/dx(xⁿ) = nxⁿ⁻¹. So d/dx(x²) = 2x" },
-        { title: "Differentiate each term", explanation: "d/dx(x²) = 2x, d/dx(3x) = 3" },
-      ],
-      answer: "f'(x) = 2x + 3",
-    };
+
+  if (!answer && steps.length > 0) {
+    answer = steps[steps.length - 1].explanation;
   }
-  if (q.includes("integrat") || q.includes("sin")) {
-    return {
-      steps: [
-        { title: "Identify the integral", explanation: "∫ sin(x) dx" },
-        { title: "Apply standard integral", explanation: "The integral of sin(x) is −cos(x)" },
-        { title: "Add constant of integration", explanation: "Don't forget the constant C" },
-      ],
-      answer: "−cos(x) + C",
-    };
+
+  if (steps.length === 0) {
+    steps.push({ title: "Result", explanation: "No detailed steps available." });
+    answer = answer || "See result above.";
   }
-  return {
-    steps: [
-      { title: "Parse the problem", explanation: `Analyzing: "${query}"` },
-      { title: "Apply relevant rules", explanation: "Applying mathematical rules and identities..." },
-    ],
-    answer: "Solution computed. Connect Wolfram Alpha API for accurate results.",
-  };
+
+  return { steps, answer, images };
 };
 
 const SearchSection = () => {
   const [query, setQuery] = useState("");
   const [showKeyboard, setShowKeyboard] = useState(false);
-  const [solution, setSolution] = useState<ReturnType<typeof mockSolve> | null>(null);
+  const [solution, setSolution] = useState<SolutionData | null>(null);
   const [practiceMode, setPracticeMode] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const placeholder = placeholders[Math.floor(Date.now() / 10000) % placeholders.length];
 
-  const handleSearch = () => {
-    if (!query.trim()) return;
-    const result = mockSolve(query);
-    setSolution(result);
-    addToHistory({ type: "search", query, answer: result.answer });
+  const solveQuery = async (q: string) => {
+    if (!q.trim()) return;
+    setLoading(true);
+    setError(null);
+    setSolution(null);
+
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke("wolfram-query", {
+        body: { query: q },
+      });
+
+      if (fnError) throw new Error(fnError.message);
+
+      if (data?.error || !data?.success) {
+        setError("No exact result found. Try rephrasing the math query.");
+        return;
+      }
+
+      const result = parseWolframPods(data.pods);
+      setSolution(result);
+      addToHistory({ type: "search", query: q, answer: result.answer });
+    } catch (err: any) {
+      console.error("Wolfram query failed:", err);
+      setError("No exact result found. Try rephrasing the math query.");
+    } finally {
+      setLoading(false);
+    }
   };
+
+  const handleSearch = () => solveQuery(query);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") handleSearch();
@@ -105,8 +137,10 @@ const SearchSection = () => {
           </button>
           <button
             onClick={handleSearch}
-            className="px-5 py-2 rounded-xl bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 transition-opacity"
+            disabled={loading}
+            className="px-5 py-2 rounded-xl bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-2"
           >
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Solve
           </button>
         </div>
@@ -120,8 +154,22 @@ const SearchSection = () => {
         </AnimatePresence>
       </div>
 
+      {/* Error message */}
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="mt-6 p-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm font-body text-center"
+          >
+            {error}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Quick examples */}
-      {!solution && (
+      {!solution && !loading && !error && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -132,9 +180,7 @@ const SearchSection = () => {
               key={ex}
               onClick={() => {
                 setQuery(ex);
-                const result = mockSolve(ex);
-                setSolution(result);
-                addToHistory({ type: "search", query: ex, answer: result.answer });
+                solveQuery(ex);
               }}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-secondary text-secondary-foreground text-sm hover:bg-primary/10 hover:text-primary transition-all"
             >
@@ -143,6 +189,18 @@ const SearchSection = () => {
               <ChevronRight className="h-3 w-3" />
             </button>
           ))}
+        </motion.div>
+      )}
+
+      {/* Loading */}
+      {loading && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="mt-8 text-center text-muted-foreground font-body"
+        >
+          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-3 text-primary" />
+          <p>Computing solution...</p>
         </motion.div>
       )}
 
@@ -177,6 +235,7 @@ const SearchSection = () => {
                 onClick={() => {
                   setSolution(null);
                   setQuery("");
+                  setError(null);
                 }}
                 className="ml-auto text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
@@ -189,6 +248,23 @@ const SearchSection = () => {
               answer={solution.answer}
               practiceMode={practiceMode}
             />
+
+            {/* Wolfram images */}
+            {solution.images && solution.images.length > 0 && (
+              <div className="mt-6 space-y-3">
+                {solution.images.map((src, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: i * 0.1 }}
+                    className="p-4 rounded-xl bg-card golden-border card-shadow flex justify-center"
+                  >
+                    <img src={src} alt={`Wolfram result ${i + 1}`} className="max-w-full" />
+                  </motion.div>
+                ))}
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
