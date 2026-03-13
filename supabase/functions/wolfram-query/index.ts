@@ -3,13 +3,38 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+async function queryWolfram(query: string, appId: string) {
+  const params = new URLSearchParams({
+    input: query,
+    appid: appId,
+    output: 'json',
+    format: 'plaintext,image',
+  });
+
+  const res = await fetch(`https://api.wolframalpha.com/v2/query?${params}`);
+  const data = await res.json();
+  const result = data?.queryresult;
+
+  if (!result || result.success === false || !result.pods || result.pods.length === 0) {
+    return null;
+  }
+
+  return result.pods.map((pod: any) => ({
+    title: pod.title,
+    subpods: pod.subpods?.map((sp: any) => ({
+      plaintext: sp.plaintext || '',
+      img: sp.img?.src || null,
+    })) || [],
+  }));
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { query } = await req.json();
+    const { query, alternateQueries } = await req.json();
     if (!query || typeof query !== 'string') {
       return new Response(JSON.stringify({ error: 'Missing query parameter' }), {
         status: 400,
@@ -25,32 +50,23 @@ Deno.serve(async (req) => {
       });
     }
 
-    const params = new URLSearchParams({
-      input: query,
-      appid: appId,
-      output: 'json',
-      format: 'plaintext,image',
-    });
+    // Try primary query
+    let pods = await queryWolfram(query, appId);
 
-    const wolframRes = await fetch(`https://api.wolframalpha.com/v2/query?${params}`);
-    const data = await wolframRes.json();
+    // If primary fails, try alternate queries
+    if (!pods && alternateQueries && Array.isArray(alternateQueries)) {
+      for (const altQuery of alternateQueries) {
+        pods = await queryWolfram(altQuery, appId);
+        if (pods) break;
+      }
+    }
 
-    const result = data?.queryresult;
-    if (!result || result.success === false || !result.pods || result.pods.length === 0) {
-      return new Response(JSON.stringify({ error: 'No result found', raw: result }), {
+    if (!pods) {
+      return new Response(JSON.stringify({ error: 'No result found', success: false }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
-
-    // Extract useful pods
-    const pods = result.pods.map((pod: any) => ({
-      title: pod.title,
-      subpods: pod.subpods?.map((sp: any) => ({
-        plaintext: sp.plaintext || '',
-        img: sp.img?.src || null,
-      })) || [],
-    }));
 
     return new Response(JSON.stringify({ success: true, pods }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
