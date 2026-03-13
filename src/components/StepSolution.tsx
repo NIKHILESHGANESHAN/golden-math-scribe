@@ -82,9 +82,7 @@ const StepSolution = ({
             </div>
             {step.formula && (
               <div className="ml-10 mt-3 p-3 rounded-lg bg-secondary/50 overflow-x-auto">
-                <try>
-                  <BlockMath math={step.formula} />
-                </try>
+                <FormulaRenderer math={step.formula} />
               </div>
             )}
           </motion.div>
