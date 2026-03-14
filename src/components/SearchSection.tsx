@@ -167,11 +167,11 @@ const SearchSection = () => {
       if (interpreted.steps?.length) {
         const aiResult: FormattedSolution = {
           steps: [
-            { title: "Step 1 — Problem Interpretation", explanation: interpreted.interpretation || q, type: "interpretation" },
-            ...interpreted.steps.map((s: any) => ({ title: s.title, explanation: s.detail, type: "computation" as const })),
-            { title: "Conclusion", explanation: interpreted.extractedValues
+            { title: "Step 1 — Problem Interpretation", content: [{ kind: "text" as const, value: interpreted.interpretation || q }], type: "interpretation" as const },
+            ...interpreted.steps.map((s: any) => ({ title: s.title, content: [{ kind: "text" as const, value: s.detail }], type: "computation" as const })),
+            { title: "Conclusion", content: [{ kind: "highlight" as const, value: interpreted.extractedValues
               ? `Extracted values: ${JSON.stringify(interpreted.extractedValues)}`
-              : "Could not compute a final numerical answer.", type: "conclusion" },
+              : "Could not compute a final numerical answer." }], type: "conclusion" as const },
           ],
           answer: interpreted.extractedValues
             ? `Extracted values: ${JSON.stringify(interpreted.extractedValues)}`
