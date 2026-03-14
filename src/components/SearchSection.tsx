@@ -144,12 +144,6 @@ const SearchSection = () => {
         return;
       }
 
-        setSolution(result);
-        addToHistory({ type: "search", query: q, answer: result.answer });
-        setStage("done");
-        return;
-      }
-
       // Stage 3: Local fallback
       setStage("fallback");
       const localResult = localFallback(q);
