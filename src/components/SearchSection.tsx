@@ -17,77 +17,7 @@ const placeholders = [
   "limit of (sin x)/x as x → 0",
 ];
 
-interface SolutionStep {
-  title: string;
-  explanation: string;
-  formula?: string;
-}
-
-interface SolutionData {
-  steps: SolutionStep[];
-  answer: string;
-  images?: string[];
-  category?: string;
-  interpretation?: string;
-  formula?: string;
-}
-
-type SolveStage = "idle" | "interpreting" | "computing" | "fallback" | "done" | "error";
-
-const stageMessages: Record<SolveStage, string> = {
-  idle: "",
-  interpreting: "Analyzing problem…",
-  computing: "Computing solution using Wolfram Alpha…",
-  fallback: "Trying local math engine…",
-  done: "",
-  error: "",
-};
-
-const parseWolframPods = (pods: any[], aiSteps?: any[]): SolutionData => {
-  const steps: SolutionStep[] = [];
-  let answer = "";
-  const images: string[] = [];
-
-  for (const pod of pods) {
-    const texts = pod.subpods
-      ?.map((sp: any) => sp.plaintext)
-      .filter((t: string) => t && t.trim())
-      .join("\n");
-
-    const podImages = pod.subpods
-      ?.map((sp: any) => sp.img)
-      .filter((img: string | null) => img);
-
-    if (podImages?.length) images.push(...podImages);
-
-    const title = pod.title || "Result";
-    const lowerTitle = title.toLowerCase();
-
-    if (lowerTitle.includes("result") || lowerTitle.includes("solution") || lowerTitle.includes("roots") || lowerTitle.includes("value")) {
-      answer = texts || answer;
-      steps.push({ title, explanation: texts || "(see image)" });
-    } else if (texts) {
-      steps.push({ title, explanation: texts });
-    }
-  }
-
-  if (!answer && steps.length > 0) {
-    answer = steps[steps.length - 1].explanation;
-  }
-
-  if (steps.length === 0 && aiSteps?.length) {
-    for (const s of aiSteps) {
-      steps.push({ title: s.title, explanation: s.detail });
-    }
-  }
-
-  if (steps.length === 0) {
-    steps.push({ title: "Result", explanation: "No detailed steps available." });
-    answer = answer || "See result above.";
-  }
-
-  return { steps, answer, images };
-};
+// SolutionData is now FormattedSolution from solutionFormatter
 
 function localFallback(query: string): SolutionData | null {
   try {
