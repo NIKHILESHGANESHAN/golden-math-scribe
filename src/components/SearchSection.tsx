@@ -35,9 +35,9 @@ function localFallback(query: string): FormattedSolution | null {
       const resultStr = typeof result === "object" && result.toString ? result.toString() : String(result);
       return {
         steps: [
-          { title: "Step 1 — Input", explanation: query, type: "interpretation" },
-          { title: "Step 2 — Computation", explanation: "Evaluated using local math engine", type: "computation" },
-          { title: "Conclusion", explanation: `The result is: ${resultStr}`, type: "conclusion" },
+          { title: "Step 1 — Input", content: [{ kind: "text", value: query }], type: "interpretation" },
+          { title: "Step 2 — Computation", content: [{ kind: "text", value: "Evaluated using local math engine" }], type: "computation" },
+          { title: "Conclusion", content: [{ kind: "highlight", value: `The result is: ${resultStr}` }], type: "conclusion" },
         ],
         answer: resultStr,
         images: [],
@@ -56,9 +56,9 @@ function localFallback(query: string): FormattedSolution | null {
       const derivative = math.derivative(expr, "x");
       return {
         steps: [
-          { title: "Step 1 — Problem Interpretation", explanation: `Find the derivative of ${expr} with respect to x`, type: "interpretation" },
-          { title: "Rule / Formula Applied", explanation: "Applied standard differentiation rules", formula: `\\frac{d}{dx}\\left[${expr}\\right]`, type: "formula" },
-          { title: "Conclusion", explanation: `The derivative is: ${derivative.toString()}`, type: "conclusion" },
+          { title: "Step 1 — Problem Interpretation", content: [{ kind: "text", value: `Find the derivative of ${expr} with respect to x` }], type: "interpretation" },
+          { title: "Rule / Formula Applied", content: [{ kind: "text", value: "Applied standard differentiation rules" }, { kind: "latex-block", value: `\\frac{d}{dx}\\left[${expr}\\right]` }], type: "formula" },
+          { title: "Conclusion", content: [{ kind: "highlight", value: `The derivative is: ${derivative.toString()}` }], type: "conclusion" },
         ],
         answer: derivative.toString(),
         images: [],
@@ -151,7 +151,8 @@ const SearchSection = () => {
         if (interpreted.interpretation) {
           localResult.steps.unshift({
             title: "Problem Interpretation",
-            explanation: interpreted.interpretation,
+            content: [{ kind: "text", value: interpreted.interpretation }],
+            type: "interpretation",
           });
         }
         localResult.category = interpreted.category;
@@ -166,11 +167,11 @@ const SearchSection = () => {
       if (interpreted.steps?.length) {
         const aiResult: FormattedSolution = {
           steps: [
-            { title: "Step 1 — Problem Interpretation", explanation: interpreted.interpretation || q, type: "interpretation" },
-            ...interpreted.steps.map((s: any) => ({ title: s.title, explanation: s.detail, type: "computation" as const })),
-            { title: "Conclusion", explanation: interpreted.extractedValues
+            { title: "Step 1 — Problem Interpretation", content: [{ kind: "text" as const, value: interpreted.interpretation || q }], type: "interpretation" as const },
+            ...interpreted.steps.map((s: any) => ({ title: s.title, content: [{ kind: "text" as const, value: s.detail }], type: "computation" as const })),
+            { title: "Conclusion", content: [{ kind: "highlight" as const, value: interpreted.extractedValues
               ? `Extracted values: ${JSON.stringify(interpreted.extractedValues)}`
-              : "Could not compute a final numerical answer.", type: "conclusion" },
+              : "Could not compute a final numerical answer." }], type: "conclusion" as const },
           ],
           answer: interpreted.extractedValues
             ? `Extracted values: ${JSON.stringify(interpreted.extractedValues)}`
