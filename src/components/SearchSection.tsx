@@ -170,14 +170,18 @@ const SearchSection = () => {
 
       // If AI gave us steps, show those as best effort
       if (interpreted.steps?.length) {
-        const aiResult: SolutionData = {
+        const aiResult: FormattedSolution = {
           steps: [
-            { title: "Problem Interpretation", explanation: interpreted.interpretation || q },
-            ...interpreted.steps.map((s: any) => ({ title: s.title, explanation: s.detail })),
+            { title: "Step 1 — Problem Interpretation", explanation: interpreted.interpretation || q, type: "interpretation" },
+            ...interpreted.steps.map((s: any) => ({ title: s.title, explanation: s.detail, type: "computation" as const })),
+            { title: "Conclusion", explanation: interpreted.extractedValues
+              ? `Extracted values: ${JSON.stringify(interpreted.extractedValues)}`
+              : "Could not compute a final numerical answer.", type: "conclusion" },
           ],
           answer: interpreted.extractedValues
             ? `Extracted values: ${JSON.stringify(interpreted.extractedValues)}`
             : "Could not compute a final numerical answer.",
+          images: [],
           category: interpreted.category,
           formula: interpreted.formula,
           interpretation: interpreted.interpretation,
