@@ -35,9 +35,9 @@ function localFallback(query: string): FormattedSolution | null {
       const resultStr = typeof result === "object" && result.toString ? result.toString() : String(result);
       return {
         steps: [
-          { title: "Step 1 — Input", explanation: query, type: "interpretation" },
-          { title: "Step 2 — Computation", explanation: "Evaluated using local math engine", type: "computation" },
-          { title: "Conclusion", explanation: `The result is: ${resultStr}`, type: "conclusion" },
+          { title: "Step 1 — Input", content: [{ kind: "text", value: query }], type: "interpretation" },
+          { title: "Step 2 — Computation", content: [{ kind: "text", value: "Evaluated using local math engine" }], type: "computation" },
+          { title: "Conclusion", content: [{ kind: "highlight", value: `The result is: ${resultStr}` }], type: "conclusion" },
         ],
         answer: resultStr,
         images: [],
