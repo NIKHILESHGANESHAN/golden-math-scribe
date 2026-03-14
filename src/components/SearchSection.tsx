@@ -6,6 +6,7 @@ import StepSolution from "./StepSolution";
 import { addToHistory } from "@/lib/history";
 import { supabase } from "@/integrations/supabase/client";
 import * as math from "mathjs";
+import { formatSolution, type FormattedSolution } from "@/lib/solutionFormatter";
 
 const placeholders = [
   "solve quadratic equation x² − 5x + 6 = 0",
