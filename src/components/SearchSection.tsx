@@ -17,19 +17,30 @@ const placeholders = [
   "limit of (sin x)/x as x → 0",
 ];
 
-// SolutionData is now FormattedSolution from solutionFormatter
+type SolveStage = "idle" | "interpreting" | "computing" | "fallback" | "done" | "error";
 
-function localFallback(query: string): SolutionData | null {
+const stageMessages: Record<SolveStage, string> = {
+  idle: "",
+  interpreting: "Analyzing problem…",
+  computing: "Computing solution using Wolfram Alpha…",
+  fallback: "Trying local math engine…",
+  done: "",
+  error: "",
+};
+
+function localFallback(query: string): FormattedSolution | null {
   try {
     const result = math.evaluate(query);
     if (result !== undefined && result !== null) {
       const resultStr = typeof result === "object" && result.toString ? result.toString() : String(result);
       return {
         steps: [
-          { title: "Input", explanation: query },
-          { title: "Computation", explanation: `Evaluated using local math engine` },
+          { title: "Step 1 — Input", explanation: query, type: "interpretation" },
+          { title: "Step 2 — Computation", explanation: "Evaluated using local math engine", type: "computation" },
+          { title: "Conclusion", explanation: `The result is: ${resultStr}`, type: "conclusion" },
         ],
         answer: resultStr,
+        images: [],
         category: "arithmetic",
         interpretation: `Direct evaluation of: ${query}`,
       };
@@ -38,7 +49,6 @@ function localFallback(query: string): SolutionData | null {
     // Not a simple expression
   }
 
-  // Try derivative / simplify patterns with mathjs
   try {
     const derivMatch = query.match(/derivative\s+of\s+(.+)/i) || query.match(/differentiate\s+(.+)/i);
     if (derivMatch) {
@@ -46,10 +56,12 @@ function localFallback(query: string): SolutionData | null {
       const derivative = math.derivative(expr, "x");
       return {
         steps: [
-          { title: "Input", explanation: `d/dx [${expr}]` },
-          { title: "Differentiation", explanation: `Applied differentiation rules` },
+          { title: "Step 1 — Problem Interpretation", explanation: `Find the derivative of ${expr} with respect to x`, type: "interpretation" },
+          { title: "Rule / Formula Applied", explanation: "Applied standard differentiation rules", formula: `\\frac{d}{dx}\\left[${expr}\\right]`, type: "formula" },
+          { title: "Conclusion", explanation: `The derivative is: ${derivative.toString()}`, type: "conclusion" },
         ],
         answer: derivative.toString(),
+        images: [],
         category: "calculus",
         formula: `\\frac{d}{dx}\\left[${expr}\\right]`,
       };
@@ -64,7 +76,7 @@ function localFallback(query: string): SolutionData | null {
 const SearchSection = () => {
   const [query, setQuery] = useState("");
   const [showKeyboard, setShowKeyboard] = useState(false);
-  const [solution, setSolution] = useState<SolutionData | null>(null);
+  const [solution, setSolution] = useState<FormattedSolution | null>(null);
   const [practiceMode, setPracticeMode] = useState(false);
   const [stage, setStage] = useState<SolveStage>("idle");
   const [error, setError] = useState<string | null>(null);
