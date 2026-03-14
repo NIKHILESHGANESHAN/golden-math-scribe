@@ -151,7 +151,8 @@ const SearchSection = () => {
         if (interpreted.interpretation) {
           localResult.steps.unshift({
             title: "Problem Interpretation",
-            explanation: interpreted.interpretation,
+            content: [{ kind: "text", value: interpreted.interpretation }],
+            type: "interpretation",
           });
         }
         localResult.category = interpreted.category;
