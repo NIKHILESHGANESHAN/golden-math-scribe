@@ -450,6 +450,7 @@ const SearchSection = () => {
             <StepSolution
               steps={solution.steps}
               answer={solution.answer}
+              answerFormula={solution.answerFormula}
               practiceMode={practiceMode}
               formula={solution.formula}
             />
