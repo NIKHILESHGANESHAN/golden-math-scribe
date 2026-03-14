@@ -131,19 +131,18 @@ const SearchSection = () => {
       if (wolfErr) throw new Error(wolfErr.message);
 
       if (wolfData?.success && wolfData?.pods) {
-        const result = parseWolframPods(wolfData.pods, interpreted.steps);
-        result.category = interpreted.category;
-        result.interpretation = interpreted.interpretation;
-        result.formula = interpreted.formula;
-
-        // Prepend AI interpretation step if we have one
-        if (interpreted.interpretation) {
-          result.steps.unshift({
-            title: "Problem Interpretation",
-            explanation: interpreted.interpretation,
-            formula: interpreted.formula,
-          });
-        }
+        const result = formatSolution(wolfData.pods, {
+          category: interpreted.category,
+          interpretation: interpreted.interpretation,
+          formula: interpreted.formula,
+          steps: interpreted.steps,
+          extractedValues: interpreted.extractedValues,
+        }, q);
+        setSolution(result);
+        addToHistory({ type: "search", query: q, answer: result.answer });
+        setStage("done");
+        return;
+      }
 
         setSolution(result);
         addToHistory({ type: "search", query: q, answer: result.answer });
