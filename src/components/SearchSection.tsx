@@ -109,7 +109,7 @@ const SearchSection = () => {
         });
         if (wolfErr) throw new Error(wolfErr.message);
         if (wolfData?.success && wolfData?.pods) {
-          const result = parseWolframPods(wolfData.pods);
+          const result = formatSolution(wolfData.pods, undefined, q);
           result.interpretation = q;
           setSolution(result);
           addToHistory({ type: "search", query: q, answer: result.answer });
