@@ -56,9 +56,9 @@ function localFallback(query: string): FormattedSolution | null {
       const derivative = math.derivative(expr, "x");
       return {
         steps: [
-          { title: "Step 1 — Problem Interpretation", explanation: `Find the derivative of ${expr} with respect to x`, type: "interpretation" },
-          { title: "Rule / Formula Applied", explanation: "Applied standard differentiation rules", formula: `\\frac{d}{dx}\\left[${expr}\\right]`, type: "formula" },
-          { title: "Conclusion", explanation: `The derivative is: ${derivative.toString()}`, type: "conclusion" },
+          { title: "Step 1 — Problem Interpretation", content: [{ kind: "text", value: `Find the derivative of ${expr} with respect to x` }], type: "interpretation" },
+          { title: "Rule / Formula Applied", content: [{ kind: "text", value: "Applied standard differentiation rules" }, { kind: "latex-block", value: `\\frac{d}{dx}\\left[${expr}\\right]` }], type: "formula" },
+          { title: "Conclusion", content: [{ kind: "highlight", value: `The derivative is: ${derivative.toString()}` }], type: "conclusion" },
         ],
         answer: derivative.toString(),
         images: [],
