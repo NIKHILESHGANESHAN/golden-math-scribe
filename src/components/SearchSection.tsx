@@ -6,6 +6,7 @@ import StepSolution from "./StepSolution";
 import { addToHistory } from "@/lib/history";
 import { supabase } from "@/integrations/supabase/client";
 import * as math from "mathjs";
+import { formatSolution, type FormattedSolution } from "@/lib/solutionFormatter";
 
 const placeholders = [
   "solve quadratic equation x² − 5x + 6 = 0",
@@ -15,21 +16,6 @@ const placeholders = [
   "find eigenvalues of [[2,1],[1,3]]",
   "limit of (sin x)/x as x → 0",
 ];
-
-interface SolutionStep {
-  title: string;
-  explanation: string;
-  formula?: string;
-}
-
-interface SolutionData {
-  steps: SolutionStep[];
-  answer: string;
-  images?: string[];
-  category?: string;
-  interpretation?: string;
-  formula?: string;
-}
 
 type SolveStage = "idle" | "interpreting" | "computing" | "fallback" | "done" | "error";
 
@@ -42,63 +28,19 @@ const stageMessages: Record<SolveStage, string> = {
   error: "",
 };
 
-const parseWolframPods = (pods: any[], aiSteps?: any[]): SolutionData => {
-  const steps: SolutionStep[] = [];
-  let answer = "";
-  const images: string[] = [];
-
-  for (const pod of pods) {
-    const texts = pod.subpods
-      ?.map((sp: any) => sp.plaintext)
-      .filter((t: string) => t && t.trim())
-      .join("\n");
-
-    const podImages = pod.subpods
-      ?.map((sp: any) => sp.img)
-      .filter((img: string | null) => img);
-
-    if (podImages?.length) images.push(...podImages);
-
-    const title = pod.title || "Result";
-    const lowerTitle = title.toLowerCase();
-
-    if (lowerTitle.includes("result") || lowerTitle.includes("solution") || lowerTitle.includes("roots") || lowerTitle.includes("value")) {
-      answer = texts || answer;
-      steps.push({ title, explanation: texts || "(see image)" });
-    } else if (texts) {
-      steps.push({ title, explanation: texts });
-    }
-  }
-
-  if (!answer && steps.length > 0) {
-    answer = steps[steps.length - 1].explanation;
-  }
-
-  if (steps.length === 0 && aiSteps?.length) {
-    for (const s of aiSteps) {
-      steps.push({ title: s.title, explanation: s.detail });
-    }
-  }
-
-  if (steps.length === 0) {
-    steps.push({ title: "Result", explanation: "No detailed steps available." });
-    answer = answer || "See result above.";
-  }
-
-  return { steps, answer, images };
-};
-
-function localFallback(query: string): SolutionData | null {
+function localFallback(query: string): FormattedSolution | null {
   try {
     const result = math.evaluate(query);
     if (result !== undefined && result !== null) {
       const resultStr = typeof result === "object" && result.toString ? result.toString() : String(result);
       return {
         steps: [
-          { title: "Input", explanation: query },
-          { title: "Computation", explanation: `Evaluated using local math engine` },
+          { title: "Step 1 — Input", explanation: query, type: "interpretation" },
+          { title: "Step 2 — Computation", explanation: "Evaluated using local math engine", type: "computation" },
+          { title: "Conclusion", explanation: `The result is: ${resultStr}`, type: "conclusion" },
         ],
         answer: resultStr,
+        images: [],
         category: "arithmetic",
         interpretation: `Direct evaluation of: ${query}`,
       };
@@ -107,7 +49,6 @@ function localFallback(query: string): SolutionData | null {
     // Not a simple expression
   }
 
-  // Try derivative / simplify patterns with mathjs
   try {
     const derivMatch = query.match(/derivative\s+of\s+(.+)/i) || query.match(/differentiate\s+(.+)/i);
     if (derivMatch) {
@@ -115,10 +56,12 @@ function localFallback(query: string): SolutionData | null {
       const derivative = math.derivative(expr, "x");
       return {
         steps: [
-          { title: "Input", explanation: `d/dx [${expr}]` },
-          { title: "Differentiation", explanation: `Applied differentiation rules` },
+          { title: "Step 1 — Problem Interpretation", explanation: `Find the derivative of ${expr} with respect to x`, type: "interpretation" },
+          { title: "Rule / Formula Applied", explanation: "Applied standard differentiation rules", formula: `\\frac{d}{dx}\\left[${expr}\\right]`, type: "formula" },
+          { title: "Conclusion", explanation: `The derivative is: ${derivative.toString()}`, type: "conclusion" },
         ],
         answer: derivative.toString(),
+        images: [],
         category: "calculus",
         formula: `\\frac{d}{dx}\\left[${expr}\\right]`,
       };
@@ -133,7 +76,7 @@ function localFallback(query: string): SolutionData | null {
 const SearchSection = () => {
   const [query, setQuery] = useState("");
   const [showKeyboard, setShowKeyboard] = useState(false);
-  const [solution, setSolution] = useState<SolutionData | null>(null);
+  const [solution, setSolution] = useState<FormattedSolution | null>(null);
   const [practiceMode, setPracticeMode] = useState(false);
   const [stage, setStage] = useState<SolveStage>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -166,7 +109,7 @@ const SearchSection = () => {
         });
         if (wolfErr) throw new Error(wolfErr.message);
         if (wolfData?.success && wolfData?.pods) {
-          const result = parseWolframPods(wolfData.pods);
+          const result = formatSolution(wolfData.pods, undefined, q);
           result.interpretation = q;
           setSolution(result);
           addToHistory({ type: "search", query: q, answer: result.answer });
@@ -188,20 +131,13 @@ const SearchSection = () => {
       if (wolfErr) throw new Error(wolfErr.message);
 
       if (wolfData?.success && wolfData?.pods) {
-        const result = parseWolframPods(wolfData.pods, interpreted.steps);
-        result.category = interpreted.category;
-        result.interpretation = interpreted.interpretation;
-        result.formula = interpreted.formula;
-
-        // Prepend AI interpretation step if we have one
-        if (interpreted.interpretation) {
-          result.steps.unshift({
-            title: "Problem Interpretation",
-            explanation: interpreted.interpretation,
-            formula: interpreted.formula,
-          });
-        }
-
+        const result = formatSolution(wolfData.pods, {
+          category: interpreted.category,
+          interpretation: interpreted.interpretation,
+          formula: interpreted.formula,
+          steps: interpreted.steps,
+          extractedValues: interpreted.extractedValues,
+        }, q);
         setSolution(result);
         addToHistory({ type: "search", query: q, answer: result.answer });
         setStage("done");
@@ -228,14 +164,18 @@ const SearchSection = () => {
 
       // If AI gave us steps, show those as best effort
       if (interpreted.steps?.length) {
-        const aiResult: SolutionData = {
+        const aiResult: FormattedSolution = {
           steps: [
-            { title: "Problem Interpretation", explanation: interpreted.interpretation || q },
-            ...interpreted.steps.map((s: any) => ({ title: s.title, explanation: s.detail })),
+            { title: "Step 1 — Problem Interpretation", explanation: interpreted.interpretation || q, type: "interpretation" },
+            ...interpreted.steps.map((s: any) => ({ title: s.title, explanation: s.detail, type: "computation" as const })),
+            { title: "Conclusion", explanation: interpreted.extractedValues
+              ? `Extracted values: ${JSON.stringify(interpreted.extractedValues)}`
+              : "Could not compute a final numerical answer.", type: "conclusion" },
           ],
           answer: interpreted.extractedValues
             ? `Extracted values: ${JSON.stringify(interpreted.extractedValues)}`
             : "Could not compute a final numerical answer.",
+          images: [],
           category: interpreted.category,
           formula: interpreted.formula,
           interpretation: interpreted.interpretation,
@@ -510,6 +450,7 @@ const SearchSection = () => {
             <StepSolution
               steps={solution.steps}
               answer={solution.answer}
+              answerFormula={solution.answerFormula}
               practiceMode={practiceMode}
               formula={solution.formula}
             />
