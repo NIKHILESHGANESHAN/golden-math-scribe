@@ -1,42 +1,159 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { MessageCircle, X, Send } from "lucide-react";
+import { MessageCircle, X, Send, Loader2 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 interface Message {
-  role: "user" | "tutor";
+  role: "user" | "assistant";
   content: string;
 }
 
-const tutorResponses: Record<string, string> = {
-  "integration": "Integration is the reverse process of differentiation. It finds the area under a curve. The basic notation is ∫f(x)dx. For example, ∫x dx = x²/2 + C.",
-  "chain rule": "The chain rule is used to differentiate composite functions. If y = f(g(x)), then dy/dx = f'(g(x)) · g'(x). Think of it as 'derivative of the outside × derivative of the inside'.",
-  "derivative": "A derivative measures how a function changes as its input changes. The derivative of f(x) = xⁿ is f'(x) = nxⁿ⁻¹. For example, d/dx(x³) = 3x².",
-  "sin": "The derivative of sin(x) is cos(x). This is because as x changes by a small amount, sin(x) changes at a rate equal to cos(x). Geometrically, cos(x) represents the slope of the sine curve at any point.",
-  "quadratic": "A quadratic equation has the form ax² + bx + c = 0. You can solve it by factoring, completing the square, or using the quadratic formula: x = (-b ± √(b²-4ac)) / 2a.",
-};
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/math-tutor-chat`;
 
-const getResponse = (input: string): string => {
-  const lower = input.toLowerCase();
-  for (const [key, response] of Object.entries(tutorResponses)) {
-    if (lower.includes(key)) return response;
+async function streamChat({
+  messages,
+  onDelta,
+  onDone,
+  onError,
+}: {
+  messages: Message[];
+  onDelta: (text: string) => void;
+  onDone: () => void;
+  onError: (err: string) => void;
+}) {
+  const resp = await fetch(CHAT_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+    },
+    body: JSON.stringify({ messages }),
+  });
+
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    onError(data.error || `Error ${resp.status}`);
+    return;
   }
-  return "Great question! Let me think about that. Could you be more specific about what part of the concept you'd like me to explain? I can help with algebra, calculus, trigonometry, and more.";
-};
+
+  if (!resp.body) {
+    onError("No response body");
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let done = false;
+
+  while (!done) {
+    const { done: readerDone, value } = await reader.read();
+    if (readerDone) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let newlineIdx: number;
+    while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+      let line = buffer.slice(0, newlineIdx);
+      buffer = buffer.slice(newlineIdx + 1);
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      if (line.startsWith(":") || line.trim() === "") continue;
+      if (!line.startsWith("data: ")) continue;
+      const jsonStr = line.slice(6).trim();
+      if (jsonStr === "[DONE]") { done = true; break; }
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) onDelta(content);
+      } catch {
+        buffer = line + "\n" + buffer;
+        break;
+      }
+    }
+  }
+
+  // Final flush
+  if (buffer.trim()) {
+    for (let raw of buffer.split("\n")) {
+      if (!raw) continue;
+      if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+      if (!raw.startsWith("data: ")) continue;
+      const jsonStr = raw.slice(6).trim();
+      if (jsonStr === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) onDelta(content);
+      } catch { /* ignore */ }
+    }
+  }
+
+  onDone();
+}
 
 const AIChatTutor = () => {
   const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "tutor", content: "Hi! I'm your math tutor. Ask me anything about mathematics — I'll guide you step by step. 📐" },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleSend = () => {
-    if (!input.trim()) return;
-    const userMsg: Message = { role: "user", content: input };
-    const tutorMsg: Message = { role: "tutor", content: getResponse(input) };
-    setMessages((prev) => [...prev, userMsg, tutorMsg]);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || isLoading) return;
+
+    const userMsg: Message = { role: "user", content: text };
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
     setInput("");
+    setIsLoading(true);
+
+    let assistantSoFar = "";
+
+    const upsertAssistant = (chunk: string) => {
+      assistantSoFar += chunk;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant") {
+          return prev.map((m, i) => (i === prev.length - 1 ? { ...m, content: assistantSoFar } : m));
+        }
+        return [...prev, { role: "assistant", content: assistantSoFar }];
+      });
+    };
+
+    try {
+      await streamChat({
+        messages: newMessages,
+        onDelta: (chunk) => upsertAssistant(chunk),
+        onDone: () => setIsLoading(false),
+        onError: (err) => {
+          upsertAssistant(`\n\n*Error: ${err}*`);
+          setIsLoading(false);
+        },
+      });
+    } catch (e) {
+      console.error("Chat error:", e);
+      setIsLoading(false);
+    }
   };
+
+  const suggestions = [
+    "What is a Z-test?",
+    "Explain the chain rule",
+    "What is eigenvalue decomposition?",
+    "Explain integration by parts",
+  ];
 
   return (
     <>
@@ -57,21 +174,40 @@ const AIChatTutor = () => {
             initial={{ opacity: 0, y: 20, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.95 }}
-            className="fixed bottom-24 right-6 z-50 w-[360px] max-h-[500px] rounded-2xl bg-card elevated-shadow golden-border flex flex-col overflow-hidden"
+            className="fixed bottom-24 right-6 z-50 w-[400px] max-h-[560px] rounded-2xl bg-card elevated-shadow golden-border flex flex-col overflow-hidden"
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
               <div>
                 <h3 className="font-display font-semibold text-foreground">AI Math Tutor</h3>
-                <p className="text-xs text-muted-foreground font-body">Ask me anything</p>
+                <p className="text-xs text-muted-foreground font-body">Ask me anything about mathematics</p>
               </div>
-              <button onClick={() => setOpen(false)} className="p-1 rounded-lg hover:bg-secondary">
+              <button onClick={() => setOpen(false)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
                 <X className="h-5 w-5 text-muted-foreground" />
               </button>
             </div>
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-[300px]">
+              {messages.length === 0 && (
+                <div className="text-center py-6">
+                  <p className="text-muted-foreground text-sm mb-4 font-body">
+                    Hi! I'm your math tutor. Ask me anything about mathematics — I'll guide you step by step. 📐
+                  </p>
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    {suggestions.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => { setInput(s); }}
+                        className="px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground text-xs hover:bg-primary/10 hover:text-primary transition-colors font-body"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {messages.map((msg, i) => (
                 <motion.div
                   key={i}
@@ -80,32 +216,53 @@ const AIChatTutor = () => {
                   className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                 >
                   <div
-                    className={`max-w-[80%] px-4 py-2.5 rounded-2xl text-sm font-body ${
+                    className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm font-body ${
                       msg.role === "user"
                         ? "bg-primary text-primary-foreground rounded-br-md"
                         : "bg-secondary text-secondary-foreground rounded-bl-md"
                     }`}
                   >
-                    {msg.content}
+                    {msg.role === "assistant" ? (
+                      <div className="prose prose-sm dark:prose-invert max-w-none [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_h2]:text-sm [&_h2]:mt-2 [&_h2]:mb-1 [&_h3]:text-sm [&_h3]:mt-2 [&_h3]:mb-1">
+                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                          {msg.content}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      msg.content
+                    )}
                   </div>
                 </motion.div>
               ))}
+
+              {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
+                <div className="flex justify-start">
+                  <div className="px-4 py-2.5 rounded-2xl rounded-bl-md bg-secondary">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  </div>
+                </div>
+              )}
+
+              <div ref={messagesEndRef} />
             </div>
 
             {/* Input */}
-            <div className="px-4 py-3 border-t border-border">
+            <div className="px-4 py-3 border-t border-border shrink-0">
               <div className="flex gap-2">
                 <input
+                  ref={inputRef}
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                  placeholder="Ask a question..."
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-secondary text-foreground placeholder:text-muted-foreground outline-none text-sm font-body"
+                  placeholder="Ask a math question..."
+                  disabled={isLoading}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-secondary text-foreground placeholder:text-muted-foreground outline-none text-sm font-body disabled:opacity-50"
                 />
                 <button
                   onClick={handleSend}
-                  className="p-2.5 rounded-xl bg-primary text-primary-foreground"
+                  disabled={isLoading || !input.trim()}
+                  className="p-2.5 rounded-xl bg-primary text-primary-foreground disabled:opacity-50 transition-opacity"
                 >
                   <Send className="h-4 w-4" />
                 </button>
