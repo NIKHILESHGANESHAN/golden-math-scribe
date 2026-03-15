@@ -1,14 +1,13 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Check, HelpCircle, ChevronRight, Award, BookOpen, FlaskConical, Calculator, Target, Lightbulb, BarChart3, TrendingUp } from "lucide-react";
+import { Check, HelpCircle, ChevronRight, Award, BookOpen, FlaskConical, Calculator, Target, Lightbulb, BarChart3, TrendingUp, ShieldCheck, ShieldAlert, ShieldQuestion } from "lucide-react";
 import 'katex/dist/katex.min.css';
 import { InlineMath, BlockMath } from 'react-katex';
-import type { FormattedStep, ContentBlock } from "@/lib/solutionFormatter";
+import type { FormattedStep, ContentBlock, VerificationResult } from "@/lib/solutionFormatter";
 
 interface Step {
   title: string;
   content?: ContentBlock[];
-  // Legacy compat
   explanation?: string;
   formula?: string;
   type?: string;
@@ -57,6 +56,7 @@ function stepIcon(type?: string) {
     case "substitution": return <Calculator className="h-4 w-4" />;
     case "pvalue": return <BarChart3 className="h-4 w-4" />;
     case "conclusion": return <Lightbulb className="h-4 w-4" />;
+    case "verification": return <ShieldCheck className="h-4 w-4" />;
     default: return null;
   }
 }
@@ -70,12 +70,12 @@ function stepAccentClass(type?: string): string {
     case "computation": return "border-l-4 border-l-primary/30";
     case "pvalue": return "border-l-4 border-l-accent/50";
     case "conclusion": return "border-l-4 border-l-primary/50";
+    case "verification": return "border-l-4 border-l-green-500/50";
     default: return "";
   }
 }
 
 function renderStepContent(step: Step) {
-  // New format: content blocks
   if (step.content && step.content.length > 0) {
     return (
       <div className="ml-11 space-y-1">
@@ -83,7 +83,6 @@ function renderStepContent(step: Step) {
       </div>
     );
   }
-  // Legacy format fallback
   return (
     <div className="ml-11 space-y-2">
       {step.explanation && (
@@ -100,14 +99,34 @@ function renderStepContent(step: Step) {
   );
 }
 
+function VerificationBadge({ verification }: { verification?: VerificationResult }) {
+  if (!verification || verification.status === "skipped") return null;
+
+  const config = {
+    verified: { icon: ShieldCheck, label: "Verified", className: "bg-green-500/10 text-green-600 border-green-500/20" },
+    unverified: { icon: ShieldQuestion, label: "Unverified", className: "bg-yellow-500/10 text-yellow-600 border-yellow-500/20" },
+    mismatch: { icon: ShieldAlert, label: "Review Needed", className: "bg-orange-500/10 text-orange-600 border-orange-500/20" },
+  }[verification.status] || { icon: ShieldQuestion, label: "Unknown", className: "bg-muted text-muted-foreground border-border" };
+
+  const Icon = config.icon;
+
+  return (
+    <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${config.className}`}>
+      <Icon className="h-3.5 w-3.5" />
+      {config.label}
+    </div>
+  );
+}
+
 const StepSolution = ({
-  steps, answer, answerFormula, practiceMode, formula,
+  steps, answer, answerFormula, practiceMode, formula, verification,
 }: {
   steps: Step[];
   answer: string;
   answerFormula?: string;
   practiceMode: boolean;
   formula?: string;
+  verification?: VerificationResult;
 }) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [userAnswer, setUserAnswer] = useState("");
@@ -142,9 +161,12 @@ const StepSolution = ({
         >
           <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent" />
           <div className="relative">
-            <div className="flex items-center gap-2 mb-2">
-              <Award className="h-5 w-5 opacity-80" />
-              <p className="text-sm font-semibold uppercase tracking-wider opacity-80">Final Answer</p>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Award className="h-5 w-5 opacity-80" />
+                <p className="text-sm font-semibold uppercase tracking-wider opacity-80">Final Answer</p>
+              </div>
+              <VerificationBadge verification={verification} />
             </div>
             {answerFormula ? (
               <div className="text-2xl font-display font-bold">
@@ -162,19 +184,22 @@ const StepSolution = ({
         <div className="space-y-3">
           {steps.map((step, i) => {
             const isConclusion = step.type === "conclusion";
+            const isVerification = step.type === "verification";
             return (
               <motion.div
                 key={i}
                 initial={{ opacity: 0, x: -16 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: 0.1 + i * 0.08 }}
-                className={`p-5 rounded-xl bg-card golden-border card-shadow ${stepAccentClass(step.type)}`}
+                className={`p-5 rounded-xl bg-card golden-border card-shadow ${stepAccentClass(step.type)} ${isVerification ? "bg-green-500/5" : ""}`}
               >
                 <div className="flex items-center gap-3 mb-3">
                   <span className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
                     isConclusion
                       ? "bg-primary/20 text-primary"
-                      : "bg-secondary text-muted-foreground"
+                      : isVerification
+                        ? "bg-green-500/20 text-green-600"
+                        : "bg-secondary text-muted-foreground"
                   }`}>
                     {stepIcon(step.type) || (i + 1)}
                   </span>

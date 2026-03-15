@@ -17,16 +17,37 @@ const placeholders = [
   "limit of (sin x)/x as x → 0",
 ];
 
-type SolveStage = "idle" | "interpreting" | "computing" | "fallback" | "done" | "error";
+type SolveStage = "idle" | "interpreting" | "computing" | "verifying" | "fallback" | "done" | "error";
 
 const stageMessages: Record<SolveStage, string> = {
   idle: "",
   interpreting: "Analyzing problem…",
   computing: "Computing solution using Wolfram Alpha…",
+  verifying: "Cross-verifying with local engine…",
   fallback: "Trying local math engine…",
   done: "",
   error: "",
 };
+
+/** Try to evaluate a query with mathjs and return a string result, or null */
+function localEvaluate(query: string): string | null {
+  try {
+    const result = math.evaluate(query);
+    if (result !== undefined && result !== null) {
+      return typeof result === "object" && result.toString ? result.toString() : String(result);
+    }
+  } catch { /* not evaluable */ }
+
+  try {
+    const derivMatch = query.match(/derivative\s+of\s+(.+)/i) || query.match(/differentiate\s+(.+)/i);
+    if (derivMatch) {
+      const expr = derivMatch[1].replace(/\s+with\s+respect\s+to\s+\w+/i, "").trim();
+      return math.derivative(expr, "x").toString();
+    }
+  } catch { /* not differentiable */ }
+
+  return null;
+}
 
 function localFallback(query: string): FormattedSolution | null {
   try {
@@ -43,11 +64,10 @@ function localFallback(query: string): FormattedSolution | null {
         images: [],
         category: "arithmetic",
         interpretation: `Direct evaluation of: ${query}`,
+        verification: { status: "verified", message: "Computed locally." },
       };
     }
-  } catch {
-    // Not a simple expression
-  }
+  } catch { /* Not a simple expression */ }
 
   try {
     const derivMatch = query.match(/derivative\s+of\s+(.+)/i) || query.match(/differentiate\s+(.+)/i);
@@ -64,13 +84,17 @@ function localFallback(query: string): FormattedSolution | null {
         images: [],
         category: "calculus",
         formula: `\\frac{d}{dx}\\left[${expr}\\right]`,
+        verification: { status: "verified", message: "Computed locally with symbolic engine." },
       };
     }
-  } catch {
-    // Not differentiable
-  }
+  } catch { /* Not differentiable */ }
 
   return null;
+}
+
+/** Normalize an answer string for fuzzy comparison */
+function normalizeAnswer(s: string): string {
+  return s.replace(/\s+/g, "").replace(/[{}()]/g, "").toLowerCase().trim();
 }
 
 const SearchSection = () => {
@@ -109,7 +133,15 @@ const SearchSection = () => {
         });
         if (wolfErr) throw new Error(wolfErr.message);
         if (wolfData?.success && wolfData?.pods) {
-          const result = formatSolution(wolfData.pods, undefined, q);
+          // Cross-verify with local engine
+          setStage("verifying");
+          const localResult = localEvaluate(q);
+          const wolframAnswer = wolfData.pods.find((p: any) => /result|solution|value/i.test(p.title))?.subpods?.[0]?.plaintext || "";
+          const localVerification = localResult
+            ? { answer: localResult, match: normalizeAnswer(localResult).includes(normalizeAnswer(wolframAnswer)) || normalizeAnswer(wolframAnswer).includes(normalizeAnswer(localResult)) }
+            : null;
+
+          const result = formatSolution(wolfData.pods, undefined, q, localVerification);
           result.interpretation = q;
           setSolution(result);
           addToHistory({ type: "search", query: q, answer: result.answer });
@@ -131,13 +163,21 @@ const SearchSection = () => {
       if (wolfErr) throw new Error(wolfErr.message);
 
       if (wolfData?.success && wolfData?.pods) {
+        // Stage 2.5: Cross-verify with local engine
+        setStage("verifying");
+        const localResult = localEvaluate(interpreted.wolframQuery) || localEvaluate(q);
+        const wolframAnswer = wolfData.pods.find((p: any) => /result|solution|value|roots/i.test(p.title))?.subpods?.[0]?.plaintext || "";
+        const localVerification = localResult
+          ? { answer: localResult, match: normalizeAnswer(localResult).includes(normalizeAnswer(wolframAnswer)) || normalizeAnswer(wolframAnswer).includes(normalizeAnswer(localResult)) }
+          : null;
+
         const result = formatSolution(wolfData.pods, {
           category: interpreted.category,
           interpretation: interpreted.interpretation,
           formula: interpreted.formula,
           steps: interpreted.steps,
           extractedValues: interpreted.extractedValues,
-        }, q);
+        }, q, localVerification);
         setSolution(result);
         addToHistory({ type: "search", query: q, answer: result.answer });
         setStage("done");
@@ -180,6 +220,7 @@ const SearchSection = () => {
           category: interpreted.category,
           formula: interpreted.formula,
           interpretation: interpreted.interpretation,
+          verification: { status: "unverified", message: "Only AI interpretation available — no computational verification." },
         };
         setSolution(aiResult);
         setStage("done");
@@ -198,7 +239,6 @@ const SearchSection = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Show preview
     const reader = new FileReader();
     reader.onload = async (ev) => {
       const base64Full = ev.target?.result as string;
@@ -256,7 +296,6 @@ const SearchSection = () => {
             className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground outline-none text-lg font-body"
           />
 
-          {/* Image upload button */}
           <input
             ref={fileInputRef}
             type="file"
@@ -377,19 +416,19 @@ const SearchSection = () => {
 
           {/* Stage indicators */}
           <div className="flex items-center justify-center gap-3 mt-4">
-            {(["interpreting", "computing", "fallback"] as SolveStage[]).map((s, i) => (
+            {(["interpreting", "computing", "verifying", "fallback"] as SolveStage[]).map((s, i) => (
               <div key={s} className="flex items-center gap-2">
                 <div
                   className={`h-2 w-2 rounded-full transition-all ${
                     s === stage
                       ? "bg-primary animate-pulse"
-                      : (["interpreting", "computing", "fallback"].indexOf(stage) > i)
+                      : (["interpreting", "computing", "verifying", "fallback"].indexOf(stage) > i)
                         ? "bg-primary"
                         : "bg-muted"
                   }`}
                 />
                 <span className={`text-xs ${s === stage ? "text-primary font-medium" : "text-muted-foreground"}`}>
-                  {s === "interpreting" ? "Analyze" : s === "computing" ? "Solve" : "Fallback"}
+                  {s === "interpreting" ? "Analyze" : s === "computing" ? "Solve" : s === "verifying" ? "Verify" : "Fallback"}
                 </span>
               </div>
             ))}
@@ -454,6 +493,7 @@ const SearchSection = () => {
               answerFormula={solution.answerFormula}
               practiceMode={practiceMode}
               formula={solution.formula}
+              verification={solution.verification}
             />
 
             {/* Wolfram images */}
@@ -467,7 +507,7 @@ const SearchSection = () => {
                     transition={{ delay: i * 0.1 }}
                     className="p-4 rounded-xl bg-card golden-border card-shadow flex justify-center"
                   >
-                    <img src={src} alt={`Result visualization ${i + 1}`} className="max-w-full" />
+                    <img src={src} alt={`Plot ${i + 1}`} className="max-w-full rounded-lg" />
                   </motion.div>
                 ))}
               </div>

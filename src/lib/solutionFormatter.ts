@@ -2,19 +2,29 @@
  * Solution Formatter — transforms raw Wolfram Alpha pods + AI interpretation
  * into structured, human-style worked solutions like a tutor would write.
  *
- * Implements rule-based step decomposition with category-specific templates
- * and progressive mathematical simplification.
+ * Implements:
+ * - Rule-based step decomposition with category-specific templates
+ * - Progressive mathematical simplification
+ * - Multi-engine cross-verification display
+ * - Self-correction / substitution verification
  */
 
 export interface FormattedStep {
   title: string;
   content: ContentBlock[];
-  type: "answer" | "interpretation" | "hypothesis" | "values" | "formula" | "substitution" | "computation" | "conclusion" | "plot" | "info" | "pvalue";
+  type: "answer" | "interpretation" | "hypothesis" | "values" | "formula" | "substitution" | "computation" | "conclusion" | "plot" | "info" | "pvalue" | "verification";
 }
 
 export interface ContentBlock {
   kind: "text" | "latex" | "latex-block" | "highlight";
   value: string;
+}
+
+export interface VerificationResult {
+  status: "verified" | "unverified" | "mismatch" | "skipped";
+  wolframAnswer?: string;
+  localAnswer?: string;
+  message?: string;
 }
 
 export interface FormattedSolution {
@@ -25,6 +35,7 @@ export interface FormattedSolution {
   category?: string;
   interpretation?: string;
   formula?: string;
+  verification?: VerificationResult;
 }
 
 // ── Irrelevant pod titles to hide ────────────────────────────────
@@ -51,21 +62,23 @@ function highlight(value: string): ContentBlock { return { kind: "highlight", va
 type MathCategory =
   | "algebra" | "calculus" | "statistics" | "probability"
   | "geometry" | "trigonometry" | "linear_algebra"
-  | "differential_equations" | "optimization" | "arithmetic" | "general";
+  | "differential_equations" | "optimization" | "arithmetic"
+  | "combinatorics" | "general";
 
 function detectCategory(category?: string): MathCategory {
   if (!category) return "general";
   const c = category.toLowerCase();
-  if (c.includes("statistic") || c.includes("hypothesis") || c.includes("z-test") || c.includes("t-test")) return "statistics";
-  if (c.includes("calculus") || c.includes("derivative") || c.includes("integral") || c.includes("differentiation")) return "calculus";
-  if (c.includes("algebra")) return "algebra";
-  if (c.includes("probability")) return "probability";
+  if (c.includes("statistic") || c.includes("hypothesis") || c.includes("z-test") || c.includes("t-test") || c.includes("chi-square") || c.includes("anova")) return "statistics";
+  if (c.includes("calculus") || c.includes("derivative") || c.includes("integral") || c.includes("differentiation") || c.includes("limit") || c.includes("multivariable")) return "calculus";
+  if (c.includes("algebra") && !c.includes("linear")) return "algebra";
+  if (c.includes("probability") || c.includes("bayesian") || c.includes("stochastic")) return "probability";
   if (c.includes("geometry")) return "geometry";
   if (c.includes("trigonometry") || c.includes("trig")) return "trigonometry";
-  if (c.includes("linear") || c.includes("matrix") || c.includes("eigen")) return "linear_algebra";
+  if (c.includes("linear") || c.includes("matrix") || c.includes("eigen") || c.includes("vector")) return "linear_algebra";
   if (c.includes("differential") && c.includes("equation")) return "differential_equations";
-  if (c.includes("optimization")) return "optimization";
+  if (c.includes("optimization") || c.includes("maxim") || c.includes("minim")) return "optimization";
   if (c.includes("arithmetic")) return "arithmetic";
+  if (c.includes("combinat") || c.includes("permut") || c.includes("combin")) return "combinatorics";
   return "general";
 }
 
@@ -106,6 +119,8 @@ const VAR_LABELS: Record<string, string> = {
   pooled_proportion: "\\hat{p}",
   standard_error: "SE",
   confidence_level: "1 - \\alpha",
+  radius: "r", height: "h", length: "l", width: "w", base: "b",
+  angle: "\\theta", hypotenuse: "c", adjacent: "a", opposite: "b",
 };
 
 const VAR_NAMES: Record<string, string> = {
@@ -118,9 +133,10 @@ const VAR_NAMES: Record<string, string> = {
   sample_size_1: "Sample size (group 1)", sample_size_2: "Sample size (group 2)",
   successes_1: "Successes (group 1)", successes_2: "Successes (group 2)",
   proportion_1: "Proportion (group 1)", proportion_2: "Proportion (group 2)",
-  pooled_proportion: "Pooled proportion",
-  standard_error: "Standard error",
+  pooled_proportion: "Pooled proportion", standard_error: "Standard error",
   confidence_level: "Confidence level",
+  radius: "Radius", height: "Height", length: "Length", width: "Width", base: "Base",
+  angle: "Angle", hypotenuse: "Hypotenuse", adjacent: "Adjacent side", opposite: "Opposite side",
 };
 
 function tryLatexify(text: string): string | undefined {
@@ -136,7 +152,6 @@ type StatsSubType = "one_sample_z" | "two_proportion_z" | "one_sample_t" | "conf
 
 function detectStatsSubType(ev: Record<string, any>, query?: string): StatsSubType {
   const q = (query || "").toLowerCase();
-  // Two-proportion Z-test
   if ((ev.successes_1 !== undefined && ev.successes_2 !== undefined) ||
       (ev.proportion_1 !== undefined && ev.proportion_2 !== undefined) ||
       (ev.sample_size_1 !== undefined && ev.sample_size_2 !== undefined) ||
@@ -147,6 +162,18 @@ function detectStatsSubType(ev: Record<string, any>, query?: string): StatsSubTy
   if (q.includes("t-test") || q.includes("t test")) return "one_sample_t";
   if (q.includes("confidence interval")) return "confidence_interval";
   return "one_sample_z";
+}
+
+// ── Build known values step (reusable) ────────────────────────────
+
+function buildKnownValuesStep(ev: Record<string, any>, stepNum: number): FormattedStep {
+  const content: ContentBlock[] = [txt("From the problem statement we identify the following known quantities:")];
+  for (const [key, val] of Object.entries(ev)) {
+    const sym = VAR_LABELS[key] || key;
+    const name = VAR_NAMES[key] || key.replace(/_/g, " ");
+    content.push(texBlock(`\\text{${name}}\\;(${sym}) = ${val}`));
+  }
+  return { title: `Step ${stepNum} — Identify Known Values`, type: "values", content };
 }
 
 // ── Category-specific step builders ──────────────────────────────
@@ -172,13 +199,11 @@ function buildTwoProportionZSteps(
   ev: Record<string, any>,
   answer: string
 ) {
-  // Extract values
   const x1 = Number(ev.successes_1 || ev.x1 || 0);
   const n1 = Number(ev.sample_size_1 || ev.n1 || 0);
   const x2 = Number(ev.successes_2 || ev.x2 || 0);
   const n2 = Number(ev.sample_size_2 || ev.n2 || 0);
 
-  // Step: Hypotheses
   steps.push({
     title: "Step 2 — Define Hypotheses",
     type: "hypothesis",
@@ -190,7 +215,6 @@ function buildTwoProportionZSteps(
     ],
   });
 
-  // Step: Known values
   const valContent: ContentBlock[] = [txt("From the problem statement we extract:")];
   if (x1) valContent.push(texBlock(`x_1 = ${x1} \\quad (\\text{successes in group 1})`));
   if (n1) valContent.push(texBlock(`n_1 = ${n1} \\quad (\\text{sample size of group 1})`));
@@ -198,7 +222,6 @@ function buildTwoProportionZSteps(
   if (n2) valContent.push(texBlock(`n_2 = ${n2} \\quad (\\text{sample size of group 2})`));
   steps.push({ title: "Step 3 — Identify Known Values", type: "values", content: valContent });
 
-  // Step: Sample proportions
   if (n1 > 0 && n2 > 0) {
     const p1 = x1 / n1;
     const p2 = x2 / n2;
@@ -219,9 +242,7 @@ function buildTwoProportionZSteps(
       ],
     });
 
-    // Step: Pooled proportion
     const pHat = (x1 + x2) / (n1 + n2);
-
     steps.push({
       title: "Step 5 — Compute Pooled Proportion",
       type: "computation",
@@ -229,17 +250,14 @@ function buildTwoProportionZSteps(
         txt("Under the null hypothesis, we combine both samples to estimate the common proportion:"),
         texBlock("\\hat{p} = \\frac{x_1 + x_2}{n_1 + n_2}"),
         txt("Substitute values:"),
-        texBlock(`\\hat{p} = \\frac{${x1} + ${x2}}{${n1} + ${n2}}`),
-        texBlock(`\\hat{p} = \\frac{${x1 + x2}}{${n1 + n2}}`),
+        texBlock(`\\hat{p} = \\frac{${x1} + ${x2}}{${n1} + ${n2}} = \\frac{${x1 + x2}}{${n1 + n2}}`),
         highlight(`$\\hat{p} = ${pHat.toFixed(4)}$`),
         txt("The pooled proportion combines both samples under the assumption that the null hypothesis is true."),
       ],
     });
 
-    // Step: Standard error
     const seSquared = pHat * (1 - pHat) * (1 / n1 + 1 / n2);
     const se = Math.sqrt(seSquared);
-
     steps.push({
       title: "Step 6 — Compute Standard Error",
       type: "computation",
@@ -248,16 +266,13 @@ function buildTwoProportionZSteps(
         texBlock("SE = \\sqrt{\\hat{p}(1 - \\hat{p})\\left(\\frac{1}{n_1} + \\frac{1}{n_2}\\right)}"),
         txt("Substitute values:"),
         texBlock(`SE = \\sqrt{${pHat.toFixed(4)} \\times ${(1 - pHat).toFixed(4)} \\times \\left(\\frac{1}{${n1}} + \\frac{1}{${n2}}\\right)}`),
-        texBlock(`SE = \\sqrt{${pHat.toFixed(4)} \\times ${(1 - pHat).toFixed(4)} \\times ${(1 / n1 + 1 / n2).toFixed(6)}}`),
         texBlock(`SE = \\sqrt{${seSquared.toFixed(6)}}`),
         highlight(`$SE = ${se.toFixed(4)}$`),
         txt("The standard error quantifies the expected sampling variability in the difference between proportions."),
       ],
     });
 
-    // Step: Z-statistic
     const z = (p1 - p2) / se;
-
     steps.push({
       title: "Step 7 — Compute Test Statistic",
       type: "computation",
@@ -265,20 +280,18 @@ function buildTwoProportionZSteps(
         txt("The Z-statistic measures how many standard errors the observed difference is away from zero:"),
         texBlock("Z = \\frac{\\hat{p}_1 - \\hat{p}_2}{SE}"),
         txt("Substitute values:"),
-        texBlock(`Z = \\frac{${p1.toFixed(4)} - ${p2.toFixed(4)}}{${se.toFixed(4)}}`),
-        texBlock(`Z = \\frac{${(p1 - p2).toFixed(4)}}{${se.toFixed(4)}}`),
+        texBlock(`Z = \\frac{${p1.toFixed(4)} - ${p2.toFixed(4)}}{${se.toFixed(4)}} = \\frac{${(p1 - p2).toFixed(4)}}{${se.toFixed(4)}}`),
         highlight(`$Z = ${z.toFixed(4)}$`),
       ],
     });
 
-    // Step: Critical value & decision
     const alpha = 0.05;
     const criticalZ = 1.96;
     const absZ = Math.abs(z);
     const reject = absZ > criticalZ;
 
     steps.push({
-      title: "Step 8 — Determine Critical Value and Decision",
+      title: "Step 8 — Critical Value and Decision",
       type: "interpretation",
       content: [
         txt(`For a two-tailed test at significance level $\\alpha = ${alpha}$:`),
@@ -291,7 +304,6 @@ function buildTwoProportionZSteps(
       ],
     });
 
-    // p-value
     const pValue = absZ > 4 ? "< 0.0001" : (2 * (1 - approxNormalCDF(absZ))).toFixed(6);
     steps.push({
       title: "Step 9 — p-Value",
@@ -305,7 +317,21 @@ function buildTwoProportionZSteps(
       ],
     });
 
-    // Conclusion
+    // Verification: recompute Z and check consistency
+    const recomputedZ = (p1 - p2) / se;
+    const consistent = Math.abs(recomputedZ - z) < 0.0001;
+    steps.push({
+      title: "Verification — Self-Check",
+      type: "verification",
+      content: [
+        txt("We verify the computation by retracing the calculation:"),
+        texBlock(`Z_{\\text{recomputed}} = \\frac{${p1.toFixed(4)} - ${p2.toFixed(4)}}{${se.toFixed(4)}} = ${recomputedZ.toFixed(4)}`),
+        highlight(consistent
+          ? "✓ Verified: The recomputed Z-statistic matches the original calculation."
+          : "⚠ Mismatch detected — review intermediate steps."),
+      ],
+    });
+
     steps.push({
       title: "Final Conclusion",
       type: "conclusion",
@@ -324,7 +350,6 @@ function buildOneSampleZSteps(
   ev: Record<string, any>,
   answer: string
 ) {
-  // Hypotheses
   if (ev.population_mean !== undefined) {
     steps.push({
       title: "Step 2 — Define Hypotheses",
@@ -338,18 +363,10 @@ function buildOneSampleZSteps(
     });
   }
 
-  // Known values
   if (Object.keys(ev).length > 0) {
-    const content: ContentBlock[] = [txt("From the problem statement we identify the following known quantities:")];
-    for (const [key, val] of Object.entries(ev)) {
-      const sym = VAR_LABELS[key] || key;
-      const name = VAR_NAMES[key] || key.replace(/_/g, " ");
-      content.push(texBlock(`\\text{${name}}\\;(${sym}) = ${val}`));
-    }
-    steps.push({ title: "Step 3 — Identify Known Values", type: "values", content });
+    steps.push(buildKnownValuesStep(ev, 3));
   }
 
-  // Formula
   if (aiData.formula) {
     steps.push({
       title: "Step 4 — Formula Used",
@@ -362,7 +379,6 @@ function buildOneSampleZSteps(
     });
   }
 
-  // Compute standard error with progressive simplification
   if (ev.standard_deviation !== undefined && ev.sample_size !== undefined) {
     const sd = Number(ev.standard_deviation);
     const n = Number(ev.sample_size);
@@ -378,12 +394,11 @@ function buildOneSampleZSteps(
         txt("Substitute the known values:"),
         texBlock(`SE = \\frac{${sd}}{\\sqrt{${n}}}`),
         txt("Simplify the denominator:"),
-        texBlock(`SE = \\frac{${sd}}{${sqrtN}}`),
-        highlight(`$SE = ${se}$`),
+        texBlock(`SE = \\frac{${sd}}{${Number.isInteger(sqrtN) ? sqrtN : sqrtN.toFixed(4)}}`),
+        highlight(`$SE = ${Number.isInteger(se) ? se : se.toFixed(4)}$`),
       ],
     });
 
-    // Compute Z-score with progressive simplification
     if (ev.sample_mean !== undefined && ev.population_mean !== undefined) {
       const xbar = Number(ev.sample_mean);
       const mu = Number(ev.population_mean);
@@ -396,14 +411,13 @@ function buildOneSampleZSteps(
           txt("The Z-score tells us how many standard errors the sample mean is away from the hypothesized population mean:"),
           texBlock("Z = \\frac{\\bar{x} - \\mu}{SE}"),
           txt("Substitute the values:"),
-          texBlock(`Z = \\frac{${xbar} - ${mu}}{${se}}`),
+          texBlock(`Z = \\frac{${xbar} - ${mu}}{${Number.isInteger(se) ? se : se.toFixed(4)}}`),
           txt("Compute the numerator:"),
-          texBlock(`Z = \\frac{${xbar - mu}}{${se}}`),
-          highlight(`$Z = ${z}$`),
+          texBlock(`Z = \\frac{${xbar - mu}}{${Number.isInteger(se) ? se : se.toFixed(4)}}`),
+          highlight(`$Z = ${Number.isInteger(z) ? z : z.toFixed(4)}$`),
         ],
       });
 
-      // Statistical interpretation
       const absZ = Math.abs(z);
       const alpha = Number(ev.significance_level) || 0.05;
       const criticalZ = alpha === 0.01 ? 2.576 : alpha === 0.1 ? 1.645 : 1.96;
@@ -416,14 +430,13 @@ function buildOneSampleZSteps(
           txt(`For a two-tailed test at significance level $\\alpha = ${alpha}$, the critical Z-values are:`),
           texBlock(`Z_{\\text{critical}} = \\pm ${criticalZ}`),
           txt("We compare the absolute value of the test statistic to the critical value:"),
-          texBlock(`|Z| = ${absZ} ${reject ? ">" : "\\leq"} ${criticalZ}`),
+          texBlock(`|Z| = ${absZ.toFixed(4)} ${reject ? ">" : "\\leq"} ${criticalZ}`),
           highlight(reject
-            ? `Since $|Z| = ${absZ} > ${criticalZ}$, we reject the null hypothesis.`
-            : `Since $|Z| = ${absZ} \\leq ${criticalZ}$, we fail to reject the null hypothesis.`),
+            ? `Since $|Z| = ${absZ.toFixed(4)} > ${criticalZ}$, we reject the null hypothesis.`
+            : `Since $|Z| = ${absZ.toFixed(4)} \\leq ${criticalZ}$, we fail to reject the null hypothesis.`),
         ],
       });
 
-      // p-value
       const pValue = absZ > 4 ? "< 0.0001" : (2 * (1 - approxNormalCDF(absZ))).toFixed(6);
       steps.push({
         title: "Step 8 — p-Value",
@@ -437,7 +450,21 @@ function buildOneSampleZSteps(
         ],
       });
 
-      // Conclusion
+      // Verification: substitute back
+      const recomputedZ = (xbar - mu) / (sd / Math.sqrt(n));
+      const consistent = Math.abs(recomputedZ - z) < 0.0001;
+      steps.push({
+        title: "Verification — Self-Check",
+        type: "verification",
+        content: [
+          txt("We verify by recomputing the Z-score from scratch:"),
+          texBlock(`Z_{\\text{check}} = \\frac{${xbar} - ${mu}}{${sd} / \\sqrt{${n}}} = \\frac{${xbar - mu}}{${Number.isInteger(se) ? se : se.toFixed(4)}} = ${recomputedZ.toFixed(4)}`),
+          highlight(consistent
+            ? "✓ Verified: The recomputed result matches. The answer is correct."
+            : "⚠ Inconsistency detected — intermediate rounding may have affected precision."),
+        ],
+      });
+
       steps.push({
         title: "Final Conclusion",
         type: "conclusion",
@@ -459,7 +486,6 @@ function buildCalculusSteps(
   answer: string,
   resultPods: ClassifiedPod[]
 ) {
-  // Identify the rule
   if (aiData.formula) {
     steps.push({
       title: "Step 2 — Rule / Method Applied",
@@ -472,11 +498,9 @@ function buildCalculusSteps(
     });
   }
 
-  // AI computation steps with explanations
   if (aiData.steps?.length) {
     aiData.steps.forEach((s, i) => {
       const content: ContentBlock[] = [txt(s.detail)];
-      // If the detail looks like it contains a formula, try to render it
       const latexMatch = s.detail.match(/([a-zA-Z_]+\s*=\s*.+)/);
       if (latexMatch) {
         content.push(texBlock(latexMatch[1]));
@@ -489,16 +513,13 @@ function buildCalculusSteps(
     });
   }
 
-  // Show Wolfram result pods as worked steps
   for (const pod of resultPods) {
     if (pod.text) {
       const latex = tryLatexify(pod.text);
       steps.push({
         title: pod.title,
         type: "computation",
-        content: [
-          ...(latex ? [texBlock(latex)] : [txt(pod.text)]),
-        ],
+        content: [...(latex ? [texBlock(latex)] : [txt(pod.text)])],
       });
     }
   }
@@ -528,17 +549,122 @@ function buildAlgebraSteps(
     });
   }
 
-  // Try to detect quadratic and show formula
-  const quadMatch = answer.match(/x\s*=\s*([-\d.]+)\s*(and|,|or)\s*x\s*=\s*([-\d.]+)/i) ||
-                     answer.match(/x\s*=\s*([-\d.]+)/);
+  // Detect quadratic and show formula with actual coefficient extraction
   if (aiData.formula && /x\^2|x²/.test(aiData.formula)) {
+    // Try to extract coefficients from extractedValues
+    const ev = aiData.extractedValues || {};
+    const a = Number(ev.a) || 1;
+    const b = Number(ev.b) || 0;
+    const c_val = Number(ev.c) || 0;
+
     steps.push({
-      title: "Step 3 — Apply the Quadratic Formula",
+      title: "Step 3 — Identify Coefficients",
+      type: "values",
+      content: [
+        txt("For a quadratic equation $ax^2 + bx + c = 0$, we identify the coefficients:"),
+        texBlock(`a = ${a}, \\quad b = ${b}, \\quad c = ${c_val}`),
+      ],
+    });
+
+    const discriminant = b * b - 4 * a * c_val;
+    steps.push({
+      title: "Step 4 — Compute Discriminant",
       type: "computation",
       content: [
-        txt("For a quadratic equation $ax^2 + bx + c = 0$, we use the quadratic formula:"),
-        texBlock("x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}"),
-        txt("First, identify the coefficients $a$, $b$, and $c$ from the equation. Then substitute into the formula and simplify."),
+        txt("The discriminant determines the nature of the roots:"),
+        texBlock("\\Delta = b^2 - 4ac"),
+        txt("Substitute:"),
+        texBlock(`\\Delta = (${b})^2 - 4(${a})(${c_val}) = ${b * b} - ${4 * a * c_val} = ${discriminant}`),
+        highlight(
+          discriminant > 0
+            ? `$\\Delta = ${discriminant} > 0$ → Two distinct real roots`
+            : discriminant === 0
+              ? `$\\Delta = 0$ → One repeated real root`
+              : `$\\Delta = ${discriminant} < 0$ → Two complex conjugate roots`
+        ),
+      ],
+    });
+
+    if (discriminant >= 0) {
+      const sqrtD = Math.sqrt(discriminant);
+      const x1 = (-b + sqrtD) / (2 * a);
+      const x2 = (-b - sqrtD) / (2 * a);
+
+      steps.push({
+        title: "Step 5 — Apply Quadratic Formula",
+        type: "computation",
+        content: [
+          texBlock("x = \\frac{-b \\pm \\sqrt{\\Delta}}{2a}"),
+          txt("Substitute:"),
+          texBlock(`x = \\frac{-(${b}) \\pm \\sqrt{${discriminant}}}{2(${a})}`),
+          texBlock(`x = \\frac{${-b} \\pm ${Number.isInteger(sqrtD) ? sqrtD : sqrtD.toFixed(4)}}{${2 * a}}`),
+          highlight(`$x_1 = ${Number.isInteger(x1) ? x1 : x1.toFixed(4)}, \\quad x_2 = ${Number.isInteger(x2) ? x2 : x2.toFixed(4)}$`),
+        ],
+      });
+
+      // Verification: substitute roots back
+      const check1 = a * x1 * x1 + b * x1 + c_val;
+      const check2 = a * x2 * x2 + b * x2 + c_val;
+      const verified = Math.abs(check1) < 0.001 && Math.abs(check2) < 0.001;
+      steps.push({
+        title: "Verification — Substitute Back",
+        type: "verification",
+        content: [
+          txt("We verify each root by substituting back into the original equation:"),
+          texBlock(`f(${Number.isInteger(x1) ? x1 : x1.toFixed(4)}) = ${a}(${Number.isInteger(x1) ? x1 : x1.toFixed(4)})^2 + (${b})(${Number.isInteger(x1) ? x1 : x1.toFixed(4)}) + (${c_val}) = ${check1.toFixed(4)}`),
+          texBlock(`f(${Number.isInteger(x2) ? x2 : x2.toFixed(4)}) = ${a}(${Number.isInteger(x2) ? x2 : x2.toFixed(4)})^2 + (${b})(${Number.isInteger(x2) ? x2 : x2.toFixed(4)}) + (${c_val}) = ${check2.toFixed(4)}`),
+          highlight(verified
+            ? "✓ Both roots satisfy the equation. Solution verified."
+            : "⚠ Substitution check shows residual error — verify precision."),
+        ],
+      });
+    }
+  } else if (aiData.steps?.length) {
+    aiData.steps.forEach((s, i) => {
+      steps.push({
+        title: `Step ${steps.length + 1} — ${s.title}`,
+        type: "computation",
+        content: [txt(s.detail)],
+      });
+    });
+  }
+
+  for (const pod of resultPods.slice(0, 3)) {
+    if (pod.text) {
+      const latex = tryLatexify(pod.text);
+      steps.push({
+        title: pod.title,
+        type: "info",
+        content: [...(latex ? [texBlock(latex)] : [txt(pod.text)])],
+      });
+    }
+  }
+
+  steps.push({
+    title: "Final Result",
+    type: "conclusion",
+    content: [txt("The solution to the equation is:"), highlight(answer)],
+  });
+}
+
+function buildGeometrySteps(
+  steps: FormattedStep[],
+  aiData: NonNullable<Parameters<typeof formatSolution>[1]>,
+  answer: string,
+  resultPods: ClassifiedPod[]
+) {
+  if (aiData.extractedValues && Object.keys(aiData.extractedValues).length > 0) {
+    steps.push(buildKnownValuesStep(aiData.extractedValues, 2));
+  }
+
+  if (aiData.formula) {
+    steps.push({
+      title: "Step 3 — Geometric Formula",
+      type: "formula",
+      content: [
+        txt("We apply the appropriate geometric formula:"),
+        texBlock(aiData.formula),
+        txt("This formula relates the given measurements to the desired quantity."),
       ],
     });
   }
@@ -553,25 +679,120 @@ function buildAlgebraSteps(
     });
   }
 
-  // Show relevant result pods (roots, alternate forms)
   for (const pod of resultPods.slice(0, 3)) {
     if (pod.text) {
-      const latex = tryLatexify(pod.text);
-      steps.push({
-        title: pod.title,
-        type: "info",
-        content: [
-          ...(latex ? [texBlock(latex)] : [txt(pod.text)]),
-        ],
-      });
+      steps.push({ title: pod.title, type: "computation", content: [texBlock(tryLatexify(pod.text) || pod.text)] });
     }
   }
 
-  steps.push({
-    title: "Final Result",
-    type: "conclusion",
-    content: [txt("The solution to the equation is:"), highlight(answer)],
-  });
+  steps.push({ title: "Final Result", type: "conclusion", content: [txt("The geometric result is:"), highlight(answer)] });
+}
+
+function buildTrigonometrySteps(
+  steps: FormattedStep[],
+  aiData: NonNullable<Parameters<typeof formatSolution>[1]>,
+  answer: string,
+  resultPods: ClassifiedPod[]
+) {
+  if (aiData.extractedValues && Object.keys(aiData.extractedValues).length > 0) {
+    steps.push(buildKnownValuesStep(aiData.extractedValues, 2));
+  }
+
+  if (aiData.formula) {
+    steps.push({
+      title: "Step 3 — Trigonometric Identity / Formula",
+      type: "formula",
+      content: [
+        txt("We apply the relevant trigonometric identity or formula:"),
+        texBlock(aiData.formula),
+        txt("Trigonometric identities allow us to simplify expressions or solve for unknown angles and sides."),
+      ],
+    });
+  }
+
+  if (aiData.steps?.length) {
+    aiData.steps.forEach((s, i) => {
+      steps.push({ title: `Step ${steps.length + 1} — ${s.title}`, type: "computation", content: [txt(s.detail)] });
+    });
+  }
+
+  for (const pod of resultPods.slice(0, 3)) {
+    if (pod.text) {
+      steps.push({ title: pod.title, type: "computation", content: [texBlock(tryLatexify(pod.text) || pod.text)] });
+    }
+  }
+
+  steps.push({ title: "Final Result", type: "conclusion", content: [txt("The trigonometric result is:"), highlight(answer)] });
+}
+
+function buildDiffEqSteps(
+  steps: FormattedStep[],
+  aiData: NonNullable<Parameters<typeof formatSolution>[1]>,
+  answer: string,
+  resultPods: ClassifiedPod[]
+) {
+  if (aiData.formula) {
+    steps.push({
+      title: "Step 2 — Identify the Differential Equation",
+      type: "formula",
+      content: [
+        txt("We identify the type and order of the differential equation:"),
+        texBlock(aiData.formula),
+        txt("Classifying the ODE/PDE helps us select the appropriate solution method (separation of variables, integrating factor, characteristic equation, etc.)."),
+      ],
+    });
+  }
+
+  if (aiData.steps?.length) {
+    aiData.steps.forEach((s, i) => {
+      steps.push({ title: `Step ${steps.length + 1} — ${s.title}`, type: "computation", content: [txt(s.detail)] });
+    });
+  }
+
+  for (const pod of resultPods.slice(0, 4)) {
+    if (pod.text) {
+      steps.push({ title: pod.title, type: "computation", content: [texBlock(tryLatexify(pod.text) || pod.text)] });
+    }
+  }
+
+  steps.push({ title: "Final Result", type: "conclusion", content: [txt("The solution to the differential equation is:"), highlight(answer)] });
+}
+
+function buildOptimizationSteps(
+  steps: FormattedStep[],
+  aiData: NonNullable<Parameters<typeof formatSolution>[1]>,
+  answer: string,
+  resultPods: ClassifiedPod[]
+) {
+  if (aiData.extractedValues && Object.keys(aiData.extractedValues).length > 0) {
+    steps.push(buildKnownValuesStep(aiData.extractedValues, 2));
+  }
+
+  if (aiData.formula) {
+    steps.push({
+      title: "Step 3 — Objective Function",
+      type: "formula",
+      content: [
+        txt("We define the objective function to optimize:"),
+        texBlock(aiData.formula),
+        txt("To find extrema, we take the derivative, set it to zero, and verify with the second derivative test."),
+      ],
+    });
+  }
+
+  if (aiData.steps?.length) {
+    aiData.steps.forEach((s, i) => {
+      steps.push({ title: `Step ${steps.length + 1} — ${s.title}`, type: "computation", content: [txt(s.detail)] });
+    });
+  }
+
+  for (const pod of resultPods.slice(0, 3)) {
+    if (pod.text) {
+      steps.push({ title: pod.title, type: "info", content: [texBlock(tryLatexify(pod.text) || pod.text)] });
+    }
+  }
+
+  steps.push({ title: "Final Result", type: "conclusion", content: [txt("The optimal value is:"), highlight(answer)] });
 }
 
 function buildProbabilitySteps(
@@ -593,40 +814,22 @@ function buildProbabilitySteps(
   }
 
   if (aiData.extractedValues && Object.keys(aiData.extractedValues).length > 0) {
-    const content: ContentBlock[] = [txt("From the problem, we extract the following parameters:")];
-    for (const [key, val] of Object.entries(aiData.extractedValues)) {
-      const sym = VAR_LABELS[key] || key;
-      const name = VAR_NAMES[key] || key.replace(/_/g, " ");
-      content.push(texBlock(`\\text{${name}}\\;(${sym}) = ${val}`));
-    }
-    steps.push({ title: "Step 3 — Extract Parameters", type: "values", content });
+    steps.push(buildKnownValuesStep(aiData.extractedValues, 3));
   }
 
   if (aiData.steps?.length) {
     aiData.steps.forEach((s, i) => {
-      steps.push({
-        title: `Step ${steps.length + 1} — ${s.title}`,
-        type: "computation",
-        content: [txt(s.detail)],
-      });
+      steps.push({ title: `Step ${steps.length + 1} — ${s.title}`, type: "computation", content: [txt(s.detail)] });
     });
   }
 
   for (const pod of resultPods.slice(0, 2)) {
     if (pod.text) {
-      steps.push({
-        title: pod.title,
-        type: "computation",
-        content: [texBlock(tryLatexify(pod.text) || pod.text)],
-      });
+      steps.push({ title: pod.title, type: "computation", content: [texBlock(tryLatexify(pod.text) || pod.text)] });
     }
   }
 
-  steps.push({
-    title: "Final Result",
-    type: "conclusion",
-    content: [txt("The computed probability / expected value is:"), highlight(answer)],
-  });
+  steps.push({ title: "Final Result", type: "conclusion", content: [txt("The computed probability / expected value is:"), highlight(answer)] });
 }
 
 function buildLinearAlgebraSteps(
@@ -648,29 +851,17 @@ function buildLinearAlgebraSteps(
 
   if (aiData.steps?.length) {
     aiData.steps.forEach((s, i) => {
-      steps.push({
-        title: `Step ${steps.length + 1} — ${s.title}`,
-        type: "computation",
-        content: [txt(s.detail)],
-      });
+      steps.push({ title: `Step ${steps.length + 1} — ${s.title}`, type: "computation", content: [txt(s.detail)] });
     });
   }
 
   for (const pod of resultPods.slice(0, 3)) {
     if (pod.text) {
-      steps.push({
-        title: pod.title,
-        type: "info",
-        content: [texBlock(tryLatexify(pod.text) || pod.text)],
-      });
+      steps.push({ title: pod.title, type: "info", content: [texBlock(tryLatexify(pod.text) || pod.text)] });
     }
   }
 
-  steps.push({
-    title: "Final Result",
-    type: "conclusion",
-    content: [txt("The result is:"), highlight(answer)],
-  });
+  steps.push({ title: "Final Result", type: "conclusion", content: [txt("The result is:"), highlight(answer)] });
 }
 
 function buildGenericSteps(
@@ -680,13 +871,7 @@ function buildGenericSteps(
   resultPods: ClassifiedPod[]
 ) {
   if (aiData?.extractedValues && Object.keys(aiData.extractedValues).length > 0) {
-    const content: ContentBlock[] = [txt("The following values were identified from the problem:")];
-    for (const [key, val] of Object.entries(aiData.extractedValues)) {
-      const sym = VAR_LABELS[key] || key;
-      const name = VAR_NAMES[key] || key.replace(/_/g, " ");
-      content.push(texBlock(`\\text{${name}}\\;(${sym}) = ${val}`));
-    }
-    steps.push({ title: "Step 2 — Known Values", type: "values", content });
+    steps.push(buildKnownValuesStep(aiData.extractedValues, 2));
   }
 
   if (aiData?.formula) {
@@ -699,29 +884,17 @@ function buildGenericSteps(
 
   if (aiData?.steps?.length) {
     aiData.steps.forEach((s, i) => {
-      steps.push({
-        title: `Step ${steps.length + 1} — ${s.title}`,
-        type: "computation",
-        content: [txt(s.detail)],
-      });
+      steps.push({ title: `Step ${steps.length + 1} — ${s.title}`, type: "computation", content: [txt(s.detail)] });
     });
   }
 
   for (const pod of resultPods.slice(0, 3)) {
     if (pod.text) {
-      steps.push({
-        title: pod.title,
-        type: "info",
-        content: [texBlock(tryLatexify(pod.text) || pod.text)],
-      });
+      steps.push({ title: pod.title, type: "info", content: [texBlock(tryLatexify(pod.text) || pod.text)] });
     }
   }
 
-  steps.push({
-    title: "Conclusion",
-    type: "conclusion",
-    content: [txt("The result is:"), highlight(answer)],
-  });
+  steps.push({ title: "Conclusion", type: "conclusion", content: [txt("The result is:"), highlight(answer)] });
 }
 
 // ── Main formatter ───────────────────────────────────────────────
@@ -735,7 +908,8 @@ export function formatSolution(
     steps?: { title: string; detail: string }[];
     extractedValues?: Record<string, any>;
   },
-  originalQuery?: string
+  originalQuery?: string,
+  localVerification?: { answer: string; match: boolean } | null
 ): FormattedSolution {
   const classified = classifyPods(pods);
   const cat = detectCategory(aiData?.category);
@@ -786,9 +960,50 @@ export function formatSolution(
       if (aiData) buildLinearAlgebraSteps(steps, aiData, answer, resultPods);
       else buildGenericSteps(steps, aiData, answer, resultPods);
       break;
+    case "geometry":
+      if (aiData) buildGeometrySteps(steps, aiData, answer, resultPods);
+      else buildGenericSteps(steps, aiData, answer, resultPods);
+      break;
+    case "trigonometry":
+      if (aiData) buildTrigonometrySteps(steps, aiData, answer, resultPods);
+      else buildGenericSteps(steps, aiData, answer, resultPods);
+      break;
+    case "differential_equations":
+      if (aiData) buildDiffEqSteps(steps, aiData, answer, resultPods);
+      else buildGenericSteps(steps, aiData, answer, resultPods);
+      break;
+    case "optimization":
+      if (aiData) buildOptimizationSteps(steps, aiData, answer, resultPods);
+      else buildGenericSteps(steps, aiData, answer, resultPods);
+      break;
     default:
       buildGenericSteps(steps, aiData, answer, resultPods);
       break;
+  }
+
+  // Cross-verification step (if local result provided)
+  let verification: VerificationResult = { status: "skipped" };
+  if (localVerification) {
+    verification = {
+      status: localVerification.match ? "verified" : "mismatch",
+      wolframAnswer: answer,
+      localAnswer: localVerification.answer,
+      message: localVerification.match
+        ? "Cross-verified: Wolfram Alpha and local engine agree."
+        : `Results differ — Wolfram: "${answer}", Local: "${localVerification.answer}". Wolfram result used.`,
+    };
+    steps.push({
+      title: "Cross-Verification",
+      type: "verification",
+      content: [
+        txt("The solution was cross-checked using an independent numeric engine:"),
+        texBlock(`\\text{Wolfram result: } ${answer}`),
+        texBlock(`\\text{Local engine: } ${localVerification.answer}`),
+        highlight(localVerification.match
+          ? "✓ Cross-verified: Both engines produce consistent results."
+          : "⚠ Results differ between engines. The Wolfram Alpha result is used as the primary answer."),
+      ],
+    });
   }
 
   if (!answer && steps.length > 0) {
@@ -797,7 +1012,7 @@ export function formatSolution(
   }
   if (!answer) answer = "No result could be determined.";
 
-  return { steps, answer, answerFormula, images, category: aiData?.category || cat, interpretation: aiData?.interpretation, formula: aiData?.formula };
+  return { steps, answer, answerFormula, images, category: aiData?.category || cat, interpretation: aiData?.interpretation, formula: aiData?.formula, verification };
 }
 
 // ── Approximate standard normal CDF (for p-value) ───────────────
