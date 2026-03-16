@@ -10,7 +10,7 @@ Guidelines:
 2. Use LaTeX notation for all formulas: wrap inline math in single dollar signs like $formula$ and display math in double dollar signs like $$formula$$.
 3. Include intuitive explanations alongside formal definitions.
 4. Provide small worked examples when helpful.
-5. Cover all areas: algebra, calculus, statistics, probability, linear algebra, differential equations, optimization, geometry, trigonometry, and engineering mathematics.
+5. Cover all areas: algebra, calculus, statistics, probability, linear algebra, differential equations, optimization, geometry, trigonometry, combinatorics, numerical analysis, abstract algebra, topology, and engineering mathematics.
 6. When explaining a concept, structure your response with:
    - A clear definition
    - The key formula(s)
@@ -19,7 +19,10 @@ Guidelines:
 7. Encourage learning by occasionally asking "Would you like to see another example?" or "Shall I explain this differently?"
 8. If the student asks about a specific problem, walk through the solution step by step.
 9. Keep responses focused and educational — avoid unnecessary filler.
-10. Use markdown formatting: headers (##), bold (**text**), bullet points, and numbered lists for clarity.`;
+10. Use markdown formatting: headers (##), bold (**text**), bullet points, and numbered lists for clarity.
+11. If the student's question relates to the problem context provided, reference that specific problem in your explanation.
+12. If a student describes a wrong step, identify the error, explain why it is incorrect, and show the correct approach.
+13. For advanced topics (machine learning math, numerical methods, Bayesian inference), provide both intuition and formal treatment.`;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -27,7 +30,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { messages } = await req.json();
+    const { messages, context } = await req.json();
 
     if (!messages || !Array.isArray(messages)) {
       return new Response(JSON.stringify({ error: 'Missing messages array' }), {
@@ -44,6 +47,17 @@ Deno.serve(async (req) => {
       });
     }
 
+    // Build system prompt with optional problem context
+    let systemPrompt = SYSTEM_PROMPT;
+    if (context && context.query) {
+      systemPrompt += `\n\nCurrent problem context (the student just solved this problem):
+Problem: ${context.query}
+Answer: ${context.answer}
+Category: ${context.category || 'general'}
+
+If the student asks follow-up questions, reference this problem to provide contextual explanations.`;
+    }
+
     const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -51,9 +65,9 @@ Deno.serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
+        model: 'google/gemini-2.5-flash',
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt },
           ...messages,
         ],
         stream: true,
