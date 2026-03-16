@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { MessageCircle, X, Send, Loader2 } from "lucide-react";
+import { MessageCircle, X, Send, Loader2, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
+import { getLastSolvedContext } from "./SearchSection";
 
 interface Message {
   role: "user" | "assistant";
@@ -15,11 +16,13 @@ const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/math-tutor-c
 
 async function streamChat({
   messages,
+  context,
   onDelta,
   onDone,
   onError,
 }: {
   messages: Message[];
+  context?: { query: string; answer: string; category?: string } | null;
   onDelta: (text: string) => void;
   onDone: () => void;
   onError: (err: string) => void;
@@ -30,7 +33,7 @@ async function streamChat({
       "Content-Type": "application/json",
       Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
     },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, context }),
   });
 
   if (!resp.ok) {
@@ -135,6 +138,7 @@ const AIChatTutor = () => {
     try {
       await streamChat({
         messages: newMessages,
+        context: getLastSolvedContext(),
         onDelta: (chunk) => upsertAssistant(chunk),
         onDone: () => setIsLoading(false),
         onError: (err) => {
@@ -153,6 +157,8 @@ const AIChatTutor = () => {
     "Explain the chain rule",
     "What is eigenvalue decomposition?",
     "Explain integration by parts",
+    "What is Bayes' theorem?",
+    "How does gradient descent work?",
   ];
 
   return (
@@ -182,10 +188,30 @@ const AIChatTutor = () => {
                 <h3 className="font-display font-semibold text-foreground">AI Math Tutor</h3>
                 <p className="text-xs text-muted-foreground font-body">Ask me anything about mathematics</p>
               </div>
-              <button onClick={() => setOpen(false)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
-                <X className="h-5 w-5 text-muted-foreground" />
-              </button>
+              <div className="flex items-center gap-1">
+                {messages.length > 0 && (
+                  <button
+                    onClick={() => setMessages([])}
+                    className="p-1 rounded-lg hover:bg-secondary transition-colors"
+                    title="Clear chat"
+                  >
+                    <Trash2 className="h-4 w-4 text-muted-foreground" />
+                  </button>
+                )}
+                <button onClick={() => setOpen(false)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
+                  <X className="h-5 w-5 text-muted-foreground" />
+                </button>
+              </div>
             </div>
+
+            {/* Context banner */}
+            {getLastSolvedContext() && messages.length === 0 && (
+              <div className="px-4 py-2 bg-primary/5 border-b border-border">
+                <p className="text-xs text-muted-foreground">
+                  📝 Context: <span className="text-foreground font-medium">{getLastSolvedContext()?.query?.slice(0, 60)}…</span>
+                </p>
+              </div>
+            )}
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-[300px]">
