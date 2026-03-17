@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { motion } from "framer-motion";
+import { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Check, HelpCircle, ChevronRight, Award, BookOpen, FlaskConical, Calculator, Target, Lightbulb, BarChart3, TrendingUp, ShieldCheck, ShieldAlert, ShieldQuestion } from "lucide-react";
 import 'katex/dist/katex.min.css';
 import { InlineMath, BlockMath } from 'react-katex';
@@ -132,6 +132,23 @@ const StepSolution = ({
   const [userAnswer, setUserAnswer] = useState("");
   const [feedback, setFeedback] = useState<"correct" | "hint" | null>(null);
   const [completed, setCompleted] = useState(false);
+  const [visibleSteps, setVisibleSteps] = useState(0);
+
+  // Progressive step animation
+  useEffect(() => {
+    if (practiceMode) return;
+    setVisibleSteps(0);
+    const timer = setInterval(() => {
+      setVisibleSteps(prev => {
+        if (prev >= steps.length) {
+          clearInterval(timer);
+          return prev;
+        }
+        return prev + 1;
+      });
+    }, 200);
+    return () => clearInterval(timer);
+  }, [steps, practiceMode]);
 
   const handleSubmit = () => {
     if (userAnswer.trim().length > 0) {
@@ -153,7 +170,7 @@ const StepSolution = ({
   if (!practiceMode) {
     return (
       <div className="space-y-4">
-        {/* ── Final Answer ─────────────────────────────────────── */}
+        {/* Final Answer */}
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -180,37 +197,55 @@ const StepSolution = ({
           </div>
         </motion.div>
 
-        {/* ── Worked Solution Steps ───────────────────────────── */}
+        {/* Worked Solution Steps — Progressive Animation */}
         <div className="space-y-3">
-          {steps.map((step, i) => {
-            const isConclusion = step.type === "conclusion";
-            const isVerification = step.type === "verification";
-            return (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, x: -16 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.1 + i * 0.08 }}
-                className={`p-5 rounded-xl bg-card golden-border card-shadow ${stepAccentClass(step.type)} ${isVerification ? "bg-green-500/5" : ""}`}
-              >
-                <div className="flex items-center gap-3 mb-3">
-                  <span className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
-                    isConclusion
-                      ? "bg-primary/20 text-primary"
-                      : isVerification
-                        ? "bg-green-500/20 text-green-600"
-                        : "bg-secondary text-muted-foreground"
-                  }`}>
-                    {stepIcon(step.type) || (i + 1)}
-                  </span>
-                  <h3 className="font-display font-semibold text-foreground text-sm uppercase tracking-wide">
-                    {step.title}
-                  </h3>
-                </div>
-                {renderStepContent(step)}
-              </motion.div>
-            );
-          })}
+          <AnimatePresence>
+            {steps.slice(0, visibleSteps).map((step, i) => {
+              const isConclusion = step.type === "conclusion";
+              const isVerification = step.type === "verification";
+              return (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, x: -16, y: 10 }}
+                  animate={{ opacity: 1, x: 0, y: 0 }}
+                  transition={{ duration: 0.4, ease: "easeOut" }}
+                  className={`p-5 rounded-xl bg-card golden-border card-shadow ${stepAccentClass(step.type)} ${isVerification ? "bg-green-500/5" : ""}`}
+                >
+                  <div className="flex items-center gap-3 mb-3">
+                    <span className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold ${
+                      isConclusion
+                        ? "bg-primary/20 text-primary"
+                        : isVerification
+                          ? "bg-green-500/20 text-green-600"
+                          : "bg-secondary text-muted-foreground"
+                    }`}>
+                      {stepIcon(step.type) || (i + 1)}
+                    </span>
+                    <h3 className="font-display font-semibold text-foreground text-sm uppercase tracking-wide">
+                      {step.title}
+                    </h3>
+                  </div>
+                  {renderStepContent(step)}
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
+
+          {/* Loading indicator for remaining steps */}
+          {visibleSteps < steps.length && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex items-center gap-2 px-5 py-3"
+            >
+              <div className="flex gap-1">
+                <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce" style={{ animationDelay: "0ms" }} />
+                <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce" style={{ animationDelay: "150ms" }} />
+                <div className="w-2 h-2 rounded-full bg-primary/40 animate-bounce" style={{ animationDelay: "300ms" }} />
+              </div>
+              <span className="text-xs text-muted-foreground font-body">Revealing step {visibleSteps + 1}...</span>
+            </motion.div>
+          )}
         </div>
       </div>
     );

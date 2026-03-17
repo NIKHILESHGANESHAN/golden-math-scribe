@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Search, BookOpen, BarChart3, FlaskConical, History, Menu, X } from "lucide-react";
+import { Search, BookOpen, BarChart3, FlaskConical, History, Menu, X, Dices } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 const navItems = [
   { path: "/", label: "Home", icon: Search },
   { path: "/formulas", label: "Formulas", icon: BookOpen },
   { path: "/graph", label: "Graph", icon: BarChart3 },
+  { path: "/practice", label: "Practice", icon: Dices },
   { path: "/test", label: "Test", icon: FlaskConical },
   { path: "/history", label: "History", icon: History },
 ];
