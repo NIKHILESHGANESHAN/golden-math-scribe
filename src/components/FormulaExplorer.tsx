@@ -176,9 +176,7 @@ const FormulaExplorer = () => {
 
                 {/* KaTeX rendered formula */}
                 <div className="mb-3 overflow-x-auto">
-                  <try>
-                    <BlockMath math={f.latex} />
-                  </try>
+                  <SafeBlockMath math={f.latex} />
                 </div>
 
                 <p className="text-sm text-muted-foreground font-body mb-3">{f.explanation}</p>
