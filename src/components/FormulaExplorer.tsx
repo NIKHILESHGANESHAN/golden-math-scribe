@@ -210,10 +210,5 @@ const FormulaExplorer = () => {
   );
 };
 
-// Simple error boundary wrapper for KaTeX
-function try_({ children }: { children: React.ReactNode }) {
-  try { return <>{children}</>; }
-  catch { return null; }
-}
 
 export default FormulaExplorer;
